@@ -1,0 +1,140 @@
+// WAP (WebAssembly Proto)
+// Cross-platform wire-safe rich linear data models that work everywhere including Webassembly.
+
+/*
+Multi line comment
+Another line
+*/
+
+// Zero copy / zero parsing flat structures
+// Optional JSON and Protobuf legacy wire format.
+// In-memory layout is flat like FlatBuffers or Capn' Proto
+// Supports small messages (<64kb) and large (1GB)
+// Supports highly mutable messages utilizing an internal memory allocator
+// Supports append only building for blazing fast construction or copying
+// Supports numerous collection types.
+//  - Array
+//  - Vector (list)
+//  - Map (unordered robin-hood map)
+//  - Map Ordered (ART Radix tree)
+//  - Tree (B+Tree)
+//
+// Extremely efficient memory layout and access. No bounds checking when possible.
+
+// Bounds Checking
+// Only pay for bounds checking when necessary.
+// Modes.
+// 1. Trusted - Message was built with current generated code. No bounds checking at all.
+// 2. Partial - Use a view/builder variant for each internal struct root
+// 3. Safe - Perform bounds check on every access
+
+// Schema evolution .lock file to prevent catastrophic evolution deployment failures
+
+namespace wap::model // some comment
+
+import "other.wap"
+
+size = u16
+
+type str_float_map map<string8, f64>
+using str_float_map = map<string8, f64>
+
+const MAP str_float_map = [
+    "hi": "bye",
+    "bye", "hi"
+]
+
+struct price {
+    open f64; high f64, low f64;
+    close f64
+}
+
+struct order {
+    @1 id   i32b    = 10 // 32bit signed big endian
+    @2 cost f64     = MAX
+
+    @11 code enum {
+            CREATE = 0
+        }
+        // enum code { CREATE = 0 }
+
+    @20 code enum { CREATE = 0 }
+
+    @3 union {
+        x       i32
+        y       string8...
+        union {
+            a   i32
+            b   f64
+        }
+    } = {x: 10}
+
+    // 4 byte padding
+    ... 4
+
+    @4 price
+        || j:Price
+        || j:p
+        || j:"@price"
+        || pb:5
+        map<string8, f64> = ["hi": "bye", "bye", ""]
+
+    @5 candle || j:OHLC struct {
+        open    f64
+        high    f64
+        low     f64
+        close   f64
+    } = {open: 1.0, 1.0, 1.0, 2.0}
+
+    6 value  Value = {OHLC: {open: 0, high: 0, low: 0, close: 0}}
+
+    7 values_array     [4]Value
+    8 values_array     *[4]Value   // array pointer
+    9 values_vector    []*Value     // always a pointer
+
+    enum Code : i32 {
+        SUCCESS = 0
+        ERROR = 1
+    }
+
+    struct OHLC {
+        open    f64     // the open value
+        high    f64     // the highest value
+        low     f64     // the lowest value
+        close   f64     // the close value
+    }
+}
+
+bits Size : i32b {
+    IS_FREE      >> 0
+    IS_PREV_FREE >> 1
+    CLEAR = IS_FREE | IS_PREV_FREE
+}
+
+variant String {
+    string15
+    string
+}
+
+// variant | tagged union | oneof
+variant Value {
+    @1 bool
+    @2 i64
+    @3 f64
+    // inline string that cannot spill over and must not contain more than 8 bytes
+    @4 string8
+    // flexible sized string. pointer type.
+    @5 string
+    // pointer to a struct. '?' flags that it may contain nil
+    @6 *Order::OHLC
+    // embedded struct
+    @7 Order::OHLC
+}
+
+struct error {
+
+}
+
+struct cache {
+
+}

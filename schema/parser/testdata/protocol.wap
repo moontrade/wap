@@ -1,0 +1,99 @@
+protocol pricing {
+    @header {
+        // size of message including header
+        @1 size                size
+        // message type id / index
+        @2 message             index
+        // request identifier
+        @3 scope               request_id
+        // sequence of message
+        @4 seq                 sequence
+        // timestamp when message was sent
+        @5 timestamp_sent      u64
+        // timestamp when received
+        @6 timestamp_received  u64
+        // requested timeout
+        @7 respond_within      u32
+
+        ...8
+    }
+
+    // Control messages have the minimal viable header
+    @control {
+        hello {
+            key string32
+        }
+        ok {
+
+        }
+        bye {
+            reason {
+                I_DISCONNECTED = 0
+                YOU_DISCONNECTED = 1
+                TIMEOUT = 2
+            }
+        }
+    }
+
+    @state {
+
+    }
+
+    action price {
+        11 request {
+            @1 id u64
+        }
+
+        12: stream response {
+            enum code : u8 {
+                SUCCESS = 0
+                ERROR = 99
+            }
+            @1 code
+            @2 message variant {
+                @2 price {
+                    id i64
+                }
+                @3 book  {
+                }
+            }
+        }
+
+        struct simple_price {}
+    }
+
+    12 notify variant {
+        i64
+        did_reconnect struct {
+
+        }
+    }
+
+    13 event {
+
+    }
+
+    error
+    order
+    order_error
+    order_changed
+    variant order_updated {
+
+    }
+}
+
+action pricing::price {
+    request { id u64 }
+
+    stream response variant {
+        i64
+        Error enum : i32 {
+        }
+        Price *struct {
+        }
+        Book {
+        }
+        Last {
+        }
+    }
+}
