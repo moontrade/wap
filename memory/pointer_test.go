@@ -1,5 +1,42 @@
 package memory
 
+import "testing"
+
+func BenchmarkPointer_Int32(b *testing.B) {
+	p := Alloc(32)
+	p.SetInt32(4, 99)
+
+	b.Run("Int32LE", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			p.Int32LE(4)
+			p.Int32LE(4)
+			p.Int32LE(4)
+			p.Int32LE(4)
+			p.Int32LE(4)
+		}
+	})
+
+	b.Run("Int32", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			p.Int32(4)
+			p.Int32(4)
+			p.Int32(4)
+			p.Int32(4)
+			p.Int32(4)
+		}
+	})
+
+	b.Run("Int32 unsafe.Add", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			p.Int32Alt(4)
+			p.Int32Alt(4)
+			p.Int32Alt(4)
+			p.Int32Alt(4)
+			p.Int32Alt(4)
+		}
+	})
+}
+
 //func TestPointerBE(t *testing.T) {
 //	a := NewTLSF(1)
 //	p := Pointer(a.Alloc(32))

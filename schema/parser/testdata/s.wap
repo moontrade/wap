@@ -34,7 +34,7 @@ namespace wap::model // some comment
 
 import "other.wap"
 
-size = u16
+max_message_size = 64kb
 
 type str_float_map map<string8, f64>
 using str_float_map = map<string8, f64>
@@ -45,7 +45,7 @@ const MAP str_float_map = [
 ]
 
 struct price {
-    open f64; high f64, low f64;
+    open f64; high ?f64, low f64;
     close f64
 }
 
@@ -53,12 +53,25 @@ struct order {
     @1 id   i32b    = 10 // 32bit signed big endian
     @2 cost f64     = MAX
 
-    @11 code enum {
-            CREATE = 0
-        }
-        // enum code { CREATE = 0 }
+    @11 code enum : i32 {
+        CREATE = 0
+    }
 
-    @20 code enum { CREATE = 0 }
+    @20 code enum : i32 { CREATE = 0, UPDATE = 1 }
+
+    // 4 byte padding comment above
+    ... 4;
+    ... 4; // 4 byte padding inline comment
+    ... 5, // 5 byte padding inline comment
+    ... 6 // 6 byte padding inline comment
+
+    @4 price
+        || j:Price
+        || j:p
+        || j:"@price"
+        || pb:5
+        : map<string8 : ?f64>
+        = {"hi": "bye", "bye", nil}
 
     @3 union {
         x       i32
@@ -67,17 +80,7 @@ struct order {
             a   i32
             b   f64
         }
-    } = {x: 10}
-
-    // 4 byte padding
-    ... 4
-
-    @4 price
-        || j:Price
-        || j:p
-        || j:"@price"
-        || pb:5
-        map<string8, f64> = ["hi": "bye", "bye", ""]
+    } = {b: 0.15, a: 3'000'000}
 
     @5 candle || j:OHLC struct {
         open    f64
@@ -89,7 +92,7 @@ struct order {
     6 value  Value = {OHLC: {open: 0, high: 0, low: 0, close: 0}}
 
     7 values_array     [4]Value
-    8 values_array     *[4]Value   // array pointer
+    8 values_array     *[4]Value    // array pointer
     9 values_vector    []*Value     // always a pointer
 
     enum Code : i32 {
@@ -98,17 +101,11 @@ struct order {
     }
 
     struct OHLC {
-        open    f64     // the open value
-        high    f64     // the highest value
-        low     f64     // the lowest value
-        close   f64     // the close value
+        open    ?f64     // the open value
+        high    ?f64     // the highest value
+        low     ?f64     // the lowest value
+        close   ?f64     // the close value
     }
-}
-
-bits Size : i32b {
-    IS_FREE      >> 0
-    IS_PREV_FREE >> 1
-    CLEAR = IS_FREE | IS_PREV_FREE
 }
 
 variant String {
@@ -116,7 +113,14 @@ variant String {
     string
 }
 
-// variant | tagged union | oneof
+// variant is a type-safe union
+// other names:
+//      tagged union
+//      oneof
+// Some languages have this feature built-in
+//      Rust = enum
+//      C++ = std::variant
+//      Kotlin = sealed class
 variant Value {
     @1 bool
     @2 i64
@@ -130,6 +134,23 @@ variant Value {
     // embedded struct
     @7 Order::OHLC
 }
+
+/*
+layout of a variant type
+struct Variant {
+    @1 index u16
+    @2 union {
+        a bool
+        b i64
+        c f64
+        d string8
+        e string
+        f *Order::OHLC
+        g Order::OHLC
+        ... 30
+    }
+}
+*/
 
 struct error {
 

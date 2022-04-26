@@ -43,6 +43,7 @@ func FNV64a(v uint64) uint64 {
 		offset64 = uint64(14695981039346656037)
 		prime64  = uint64(1099511628211)
 	)
+	//return (v * prime64) ^ offset64
 	hash := offset64
 	hash ^= uint64(byte(v))
 	hash *= prime64

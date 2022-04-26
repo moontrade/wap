@@ -1,6 +1,9 @@
 package parser
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"math"
+)
 
 type Comment struct {
 	Star   bool
@@ -16,7 +19,7 @@ type CommentLine struct {
 type TypeCode byte
 
 const (
-	TypeUnknown        TypeCode = 0
+	TypeCodeUnknown    TypeCode = 0
 	TypeCodeBool       TypeCode = 1
 	TypeCodeI8         TypeCode = 2
 	TypeCodeU8         TypeCode = 3
@@ -37,6 +40,7 @@ const (
 	TypeCodeStruct     TypeCode = 30
 	TypeCodeUnion      TypeCode = 31
 	TypeCodeVariant    TypeCode = 32
+	TypeCodeOptional   TypeCode = 33
 	TypeCodePointer    TypeCode = 33
 	TypeCodeArray      TypeCode = 40
 	TypeCodeVector     TypeCode = 41
@@ -46,6 +50,7 @@ const (
 	TypeCodeSet        TypeCode = 60
 	TypeCodeSetOrdered TypeCode = 61
 	TypeCodeSetTree    TypeCode = 62
+	TypeCodeConst      TypeCode = 90
 	TypeCodePad        TypeCode = 100
 )
 
@@ -72,6 +77,49 @@ func (n *Number) Size() int {
 		return 4
 	case TypeCodeI64, TypeCodeU64, TypeCodeF64:
 		return 8
+	}
+	return 0
+}
+
+func MinNumber(code TypeCode) int64 {
+	switch code {
+	case TypeCodeI8:
+		return math.MinInt8
+	case TypeCodeI16:
+		return math.MinInt16
+	case TypeCodeI32:
+		return math.MinInt32
+	case TypeCodeI64:
+		return math.MinInt64
+	}
+	return 0
+}
+
+func MaxNumber(code TypeCode) uint64 {
+	switch code {
+	case TypeCodeI8:
+		return math.MaxInt8
+	case TypeCodeI16:
+		return math.MaxInt16
+	case TypeCodeI32:
+		return math.MaxInt32
+	case TypeCodeI64:
+		return math.MaxInt64
+
+	case TypeCodeU8:
+		return math.MaxUint8
+	case TypeCodeU16:
+		return math.MaxUint16
+	case TypeCodeU32:
+		return math.MaxUint32
+	case TypeCodeU64:
+		return math.MaxUint64
+
+	case TypeCodeF32:
+		return math.Float64bits(math.MaxFloat32)
+
+	case TypeCodeF64:
+		return math.Float64bits(math.MaxFloat64)
 	}
 	return 0
 }
@@ -121,25 +169,6 @@ var (
 	F64B = Type{Name: "f64b", Code: TypeCodeF64, Number: &Number{TypeCodeF64, EndianBig}}
 	F64N = Type{Name: "f64n", Code: TypeCodeF64, Number: &Number{TypeCodeF64, EndianNative}}
 )
-
-type NumberValue struct {
-	*Number
-	value [8]byte
-}
-
-func (nv *NumberValue) Size() int {
-	switch nv.Number.Code {
-	case TypeCodeBool, TypeCodeI8, TypeCodeU8:
-		return 1
-	case TypeCodeI16, TypeCodeU16:
-		return 2
-	case TypeCodeI32, TypeCodeU32, TypeCodeF32:
-		return 4
-	case TypeCodeI64, TypeCodeU64, TypeCodeF64:
-		return 8
-	}
-	return 0
-}
 
 /*
 
@@ -217,7 +246,9 @@ type Type struct {
 	StartLine Line
 	EndLine   Line
 	Comments  []*Comment
+	Optional  *Optional
 	Pointer   *Pointer
+	Const     *Const
 	Number    *Number
 	Enum      *Enum
 	Field     *Field
@@ -228,6 +259,36 @@ type Type struct {
 	Vector    *Vector
 	Map       *Map
 	Code      TypeCode
+}
+
+func (t *Type) ParentField() (*Type, *Field) {
+	if t.Field != nil {
+		return t, t.Field
+	}
+	for p := t.Parent; p != nil; p = p.Parent {
+		if p.Field != nil {
+			return p, p.Field
+		}
+	}
+	return nil, nil
+}
+
+func (t *Type) ParentStruct() (*Type, *Struct) {
+	for p := t.Parent; p != nil; p = p.Parent {
+		if p.Struct != nil {
+			return p, p.Struct
+		}
+	}
+	return nil, nil
+}
+
+func (t *Type) ParentConst() (*Type, *Const) {
+	for p := t.Parent; p != nil; p = p.Parent {
+		if p.Const != nil {
+			return p, p.Const
+		}
+	}
+	return nil, nil
 }
 
 func (t *Type) Size() int {
@@ -257,30 +318,13 @@ type Pointer struct {
 	Size int
 }
 
-type Value struct {
-	Type    *Type
-	Const   *Const
-	Enum    *EnumOption
-	Variant *VariantOption
-	Struct  *StructValue
-	Number  *NumberValue
-}
-
-func (v *Value) Append(b []byte) []byte {
-	switch {
-	case v.Const != nil:
-		b = v.Const.Value.Append(b)
-	case v.Enum != nil:
-	case v.Variant != nil:
-	case v.Struct != nil:
-		b = v.Struct.Append(b)
-	case v.Number != nil:
-		b = v.Number.Append(b)
-	}
-	return b
+type Optional struct {
+	Type      *Type
+	IndexType *Type
 }
 
 type Const struct {
+	Type  *Type
 	Name  string
 	Value Value
 }
@@ -357,23 +401,16 @@ type Field struct {
 	Initial        Value
 }
 
-type StructValue struct {
-	Fields []FieldValue
-}
-
-func (sv *StructValue) Append(b []byte) []byte {
-	return b
-}
-
 type FieldValue struct {
 	Field *Field
 	Value Value
 }
 
 type Variant struct {
-	Type    *Type
-	Inline  *Field
-	Options []VariantOption
+	Type     *Type
+	Inline   *Field
+	Options  []VariantOption
+	Optional bool
 }
 
 type VariantOption struct {
@@ -386,10 +423,8 @@ func (vo *VariantOption) Size() int {
 }
 
 type Enum struct {
-	Parent    *Type
-	Type      Type
-	Inline    *Field
-	ValueType Number
+	Type      *Type
+	ValueType *Type
 	Options   []*EnumOption
 }
 
@@ -400,18 +435,21 @@ type EnumOption struct {
 }
 
 type Map struct {
+	Type  *Type
 	Kind  TypeCode
 	Key   *Type
 	Value *Type
 }
 
 type Vector struct {
+	Type    *Type
 	Kind    TypeCode
 	Element *Type
 	Length  int
 }
 
 type String struct {
+	Type        *Type
 	Code        TypeCode
 	PointerSize int
 	Inline      int
@@ -438,8 +476,9 @@ type Import struct {
 }
 
 type File struct {
-	Constants       []*Const
-	ConstantsByName map[string]*Const
-	Structs         []*Struct
-	Types           map[string]*Type
+	Constants []*Const
+	Structs   []*Struct
+	Enums     []*Enum
+	Variants  []*Variant
+	Types     map[string]*Type
 }
