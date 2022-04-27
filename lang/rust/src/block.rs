@@ -2,46 +2,8 @@ use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ptr;
 
-trait Num {
-    fn from(value: u64) -> Self;
-
-    fn shift_left(value: Self, by: Self) -> Self;
-
-    // fn shift_left(self, by: Self) -> Self;
-}
-
-impl Num for u16 {
-    fn from(value: u64) -> Self {
-        value as Self
-    }
-
-    fn shift_left(value: Self, by: Self) -> Self {
-        value << by
-    }
-}
-
-impl Num for u32 {
-    fn from(value: u64) -> Self {
-        value as Self
-    }
-
-    fn shift_left(value: Self, by: Self) -> Self {
-        value << by
-    }
-}
-
-impl Num for u64 {
-    fn from(value: u64) -> Self {
-        value as Self
-    }
-
-    fn shift_left(value: Self, by: Self) -> Self {
-        value << by
-    }
-}
-
 pub trait Block {
-    type Size: Num;
+    type Size;
 
     // The size of the block header exposed to used blocks is the size field.
     // The prev_phys field is stored *inside* the previous free block.
@@ -79,14 +41,14 @@ pub trait Block {
     fn put_size_value_usize(p: *mut u8, size: usize);
 }
 
-struct Block_<S: Num> {
+struct Block_<S> {
     prev_phys: S,
     size: S,
     next_free: S,
     prev_free: S,
 }
 
-impl<S: Num> Block_<S> {
+impl<S> Block_<S> {
     // Since block sizes are always at least a multiple of 4, the two least
     // significant bits of the size field are used to store the block status:
     // - bit 0: whether block is used or free

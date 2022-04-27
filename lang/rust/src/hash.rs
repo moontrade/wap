@@ -1,7 +1,6 @@
 #![feature(test)]
 // #![feature(bigint_helper_methods)]
 // #![allow(soft_unstable)]
-// #![allow(test)]
 
 extern crate test;
 
