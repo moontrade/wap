@@ -4,6 +4,8 @@
 
 extern crate test;
 
+use std::mem;
+
 //
 pub struct Rand {
     seed: u64,
@@ -275,6 +277,25 @@ impl Hasher for Vec<u8> {
 pub fn hash_default(data: *const u8, length: u64) -> u64 {
     unsafe { hash(data, length, DEFAULT_SEED) }
 }
+
+pub fn hash_sized<T: Sized>(data: &T) -> u64 {
+    unsafe { hash(unsafe { data as *const T as *const u8 },
+                  mem::size_of::<T>() as u64, DEFAULT_SEED) }
+}
+
+// impl<T: Sized> Hasher for T {
+//     fn hash_wap(self) -> u64 {
+//         unsafe { hash(unsafe { &data as *const T as *const u8 },
+//                       mem::size_of::<T>() as u64, DEFAULT_SEED) }
+//     }
+// }
+//
+// impl<T: Sized> Hasher for &T {
+//     fn hash_wap(self) -> u64 {
+//         unsafe { hash(unsafe { self as *const T as *const u8 },
+//                       mem::size_of::<T>() as u64, DEFAULT_SEED) }
+//     }
+// }
 
 pub unsafe fn hash(data: *const u8, length: u64, seed: u64) -> u64 {
     let mut a: u64 = 0;

@@ -2,17 +2,19 @@
 // BaseBuilder16Ref
 /////////////////////////////////////////////////////////////////////////////
 
+use std::{mem, ptr};
 use std::borrow::BorrowMut;
 use std::cell::UnsafeCell;
+use std::error::Error;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
+use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
-use std::ptr;
 
-use crate::alloc::{Allocator, Doubled, Global, Grow, GrowResult};
+use crate::{data, message};
+use crate::alloc::{Allocator, Doubled, Global, Grow, TruncResult};
 use crate::block::Block;
-use crate::header::{Header, Header16, Fixed16};
-use crate::message;
+use crate::header::{Fixed16, Header, Header16};
 
 pub trait Builder {
     type Header: Header;
@@ -20,7 +22,11 @@ pub trait Builder {
     type Grow: Grow;
     type Allocator: Allocator;
 
+    const BASE_OFFSET: isize;
+
     fn to_vptr(&self, block: *mut Self::Block) -> usize;
+
+    fn offset(&self, offset: isize) -> *mut u8;
 
     fn head_ptr(&self) -> *mut u8;
 
@@ -36,11 +42,9 @@ pub trait Builder {
 
     fn size(&self) -> usize;
 
-    fn take(&mut self) -> (*const u8, *const u8, *const u8, *const u8);
+    fn take(self) -> (*const u8, *const u8);
 
-    fn grow(&mut self, by: usize) -> GrowResult;
-
-    // fn allocate0(&mut self, size: usize) -> Allocation<'a, Self> where Self: Sized;
+    fn truncate(&mut self, by: usize) -> TruncResult;
 
     fn allocate(&mut self, size: usize) -> *mut Self::Block;
 
@@ -51,14 +55,24 @@ pub trait Builder {
     fn deallocate(&mut self, block: &mut Self::Block);
 }
 
-pub trait Record {
-    type Header: Header;
+pub trait BuilderRef<'a, B: Builder> {
+    fn builder_mut(&mut self) -> *mut B;
+}
+
+pub trait Record<'a> {
     type Builder: Builder;
-    type Completed: message::Record;
 
     const SIZE: usize;
+}
 
-    fn new(offset: isize, builder: *mut Self::Builder) -> Self;
+pub trait Root<'a, B: Builder>: Record<'a, Builder=B> + BuilderRef<'a, B> {
+    // type Completed: data::Record<'a>;
+
+    fn new(builder: B) -> Self;
+}
+
+pub trait Nested<'a>: Record<'a> {
+    fn new(offset: isize, bounds: isize, builder: *mut Self::Builder) -> Self;
 }
 
 pub struct Allocation<B: Builder> {
@@ -73,54 +87,69 @@ impl<B: Builder> Allocation<B> {
     fn reallocate(&mut self) {}
 }
 
-pub struct Message<
-    H: Header,
+pub struct Message<'a,
     B: Builder,
-    C: message::Record<Header = H>,
-    R: Record<Header=H, Builder=B, Completed=C>,
+    R: 'a + Root<'a, B>,
 > {
-    b: B,
     r: R,
-    // _phantom: PhantomData<(&'a ())>,
+    _phantom: PhantomData<(&'a (), B, R)>,
 }
 
-impl<
-    H: Header,
+impl<'a,
     B: Builder,
-    C: message::Record<Header = H>,
-    R: Record<Header=H, Builder=B, Completed=C>,
-> Message<H, B, C, R> {
+    R: 'a + Root<'a, B>,
+> Message<'a, B, R> {
+    const INITIAL_SIZE: usize = B::Header::SIZE as usize + R::SIZE;
+    const DEREF_BASE_OFFSET: isize = B::Header::SIZE - B::Block::SIZE_BYTES;
+    const BASE_OFFSET: isize = B::Header::SIZE;
+    const BASE_SIZE: isize = R::SIZE as isize;
+
     #[inline(always)]
     pub fn new(builder: B) -> Self {
         Self {
-            b: builder,
-            r: unsafe { MaybeUninit::uninit().assume_init() },
-            // r: S::new(H::SIZE+2, ptr::null_mut()),
-            // _phantom: PhantomData,
+            r: R::new(builder),
+            _phantom: PhantomData,
         }
     }
 
-    #[inline(always)]
-    pub fn builder(&mut self) -> &mut B {
-        // unsafe { &mut *(&mut self.b as *mut B) }
-        &mut self.b
-    }
+    // #[inline(always)]
+    // pub fn base(&'a mut self) -> &mut R {
+    //     &mut self.r
+    // }
+
+    // pub fn build<F>(mut self, mut f: F)
+    //                 -> Option<message::Flex<'a, B::Header, R::Completed, B::Allocator>>
+    //     where F: FnMut(&mut R) {
+    //     f(&mut self, self.deref_mut());
+    //     Some(self.finish())
+    // }
+
+    // pub fn finish(mut self) -> message::Flex<'a, B::Header, R::Completed, B::Allocator> {
+    //     let (head, base, tail, end) = unsafe { &mut (*self.builder_mut()) }.take();
+    //     mem::forget(self);
+    //     message::Flex::from_builder(head, end)
+    // }
+}
+
+impl<'a,
+    B: Builder,
+    R: 'a + Root<'a, B>,
+> Deref for Message<'a, B, R> {
+    type Target = R;
 
     #[inline(always)]
-    pub fn record(&mut self) -> &mut R {
-        self.r = R::new(H::SIZE + 2, self.builder());
+    fn deref(&self) -> &Self::Target {
+        &self.r
+    }
+}
+
+impl<'a,
+    B: Builder,
+    R: 'a + Root<'a, B>,
+> DerefMut for Message<'a, B, R> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.r
-        // unsafe { &mut *(&mut self.r as *mut R) }
-    }
-
-    pub fn build<F>(&mut self, mut f: F) where
-        F: FnMut(&mut R) {
-        f(self.record());
-    }
-
-    pub fn finish(mut self) -> message::Flex<H, C, B::Allocator> {
-        let (head, base, tail, end) = self.b.take();
-        message::Flex::from_builder(head, base, tail, end)
     }
 }
 
@@ -129,22 +158,21 @@ pub struct Appender<
     G: Grow = Doubled,
     A: Allocator = Global
 > {
-    head: *mut u8,
-    base: *mut u8,
-    tail: *mut u8,
+    root: *mut u8,
     end: *mut u8,
     trash: usize,
-    _phantom: PhantomData<(H, G, A)>,
+    _p: PhantomData<(H, G, A)>,
 }
 
 impl<H, G, A> Appender<H, G, A>
     where
-        H: Header, G: Grow, A: Allocator {
-    pub fn new<C, R>(extra: usize) -> Option<Message<H, Self, C, R>>
+        H: Header,
+        G: Grow,
+        A: Allocator {
+    pub fn new<'a, R>(extra: usize) -> Option<Message<'a, Self, R>>
         where
-            C: message::Record<Header=H>,
-            R: Record<Header=H, Builder=Self, Completed=C> {
-        let size = H::SIZE as usize + R::SIZE + 2;
+            R: 'a + Root<'a, Self> {
+        let size = H::SIZE as usize + R::SIZE;
         let capacity = size + extra;
         let p = unsafe { A::allocate(capacity) };
         if p == ptr::null_mut() {
@@ -152,19 +180,17 @@ impl<H, G, A> Appender<H, G, A>
         }
         let m = Message::new(unsafe {
             Self {
-                head: p,
-                base: p.offset(H::SIZE),
-                tail: p.offset(size as isize),
+                root: p,
                 end: p.offset(capacity as isize),
                 trash: 0usize,
-                _phantom: PhantomData,
+                _p: PhantomData,
             }
         });
         Some(m)
     }
 
-    pub fn wrap(head: *mut u8, base: *mut u8, tail: *mut u8, end: *mut u8) -> Self {
-        Self { head, base, tail, end, trash: 0, _phantom: PhantomData }
+    pub fn wrap(root: *mut u8, end: *mut u8) -> Self {
+        Self { root, end, trash: 0, _p: PhantomData }
     }
 }
 
@@ -174,10 +200,7 @@ impl<H, G, A> Drop for Appender<H, G, A>
         G: Grow,
         A: Allocator {
     fn drop(&mut self) {
-        if self.head != ptr::null_mut() {
-            A::deallocate(self.head, self.capacity());
-            self.head = ptr::null_mut();
-        }
+        A::deallocate(self.root, self.capacity());
     }
 }
 
@@ -189,24 +212,31 @@ impl<H, G, A> Builder for Appender<H, G, A>
     type Grow = G;
     type Allocator = A;
 
+    const BASE_OFFSET: isize = H::SIZE - H::Block::SIZE_BYTES as isize;
+
     #[inline(always)]
     fn to_vptr(&self, block: *mut Self::Block) -> usize {
-        Self::Block::offset(self.base, block) as usize
+        Self::Block::offset(self.root, block) as usize
+    }
+
+    #[inline(always)]
+    fn offset(&self, offset: isize) -> *mut u8 {
+        unsafe { self.root.offset(offset) }
     }
 
     #[inline(always)]
     fn head_ptr(&self) -> *mut u8 {
-        self.head
+        self.root
     }
 
     #[inline(always)]
     fn base_ptr(&self) -> *mut u8 {
-        self.base
+        unsafe { self.root.offset(H::SIZE) }
     }
 
     #[inline(always)]
     fn tail_ptr(&self) -> *mut u8 {
-        self.tail
+        unsafe { self.root.offset(self.size() as isize) }
     }
 
     #[inline(always)]
@@ -216,63 +246,58 @@ impl<H, G, A> Builder for Appender<H, G, A>
 
     #[inline(always)]
     fn base_size(&self) -> usize {
-        Self::Block::get_size_value_mut(self.base)
+        (unsafe { &mut *(self.root as *mut H) }).base_size()
     }
 
     #[inline(always)]
     fn capacity(&self) -> usize {
-        unsafe { self.end as usize - self.head as usize }
+        unsafe { self.end as usize - self.root as usize }
     }
 
     #[inline(always)]
     fn size(&self) -> usize {
-        H::raw_size(self.head)
+        H::raw_size(self.root)
     }
 
-    fn take(&mut self) -> (*const u8, *const u8, *const u8, *const u8) {
-        let head = self.head;
-        self.head = ptr::null_mut();
-        (head, self.base, self.tail, self.end)
+    #[inline(always)]
+    fn take(self) -> (*const u8, *const u8) {
+        let root = self.root;
+        let end = self.end;
+        mem::forget(self);
+        (root, end)
     }
 
-
-    fn grow(&mut self, by: usize) -> GrowResult {
+    fn truncate(&mut self, by: usize) -> TruncResult {
         let current_capacity = self.capacity();
         let new_capacity = G::calc(current_capacity, by);
 
         if new_capacity > H::Block::SIZE_LIMIT {
-            return GrowResult::Overflow;
+            return TruncResult::Overflow;
         }
-        let existing_size = unsafe { self.tail as usize - self.head as usize };
+        let existing_size = self.size();
 
         // can't shrink
         if new_capacity < current_capacity {
-            return GrowResult::Underflow;
+            return TruncResult::Underflow;
         }
 
         // try to reallocate
-        let (new_buffer, new_buffer_capacity) = A::reallocate(self.head, new_capacity);
+        let (new_buffer, new_buffer_capacity) = A::reallocate(self.root, new_capacity);
         if new_buffer == ptr::null_mut() {
-            return GrowResult::OutOfMemory;
+            return TruncResult::OutOfMemory;
         }
 
         // in place reallocation?
-        if self.head == new_buffer {
+        if self.root == new_buffer {
             // ensure the end is correctly set
             self.end = unsafe { new_buffer.offset(new_capacity as isize) };
-            return GrowResult::Success;
+            return TruncResult::Success;
         }
 
-        self.head = new_buffer;
-        self.base = unsafe { new_buffer.offset(H::SIZE) };
-        self.tail = unsafe { new_buffer.offset(existing_size as isize) };
+        self.root = new_buffer;
         self.end = unsafe { new_buffer.offset(new_capacity as isize) };
-        GrowResult::Success
+        TruncResult::Success
     }
-
-    // fn allocate0(&mut self, size: usize) -> Allocation<'a, Self> {
-    //     Allocation::new(unsafe { &mut *(self as *mut Self) }, self.allocate(size))
-    // }
 
     #[inline(always)]
     fn allocate(&mut self, size: usize) -> *mut Self::Block {
@@ -280,24 +305,23 @@ impl<H, G, A> Builder for Appender<H, G, A>
     }
 
     fn append(&mut self, size: usize) -> *mut Self::Block {
-        let current_size = H::raw_size(self.head);
+        let current_size = self.size();
         let new_size = current_size + Self::Block::OVERHEAD as usize;
-        let mut new_tail = unsafe { self.tail.offset(Self::Block::OVERHEAD + size as isize) };
+        let mut new_tail = unsafe { self.tail_ptr().offset(Self::Block::OVERHEAD + size as isize) };
 
         if new_tail > self.end {
-            match self.grow(size + Self::Block::OVERHEAD as usize) {
-                GrowResult::Success => {
-                    new_tail = unsafe { self.tail.offset(Self::Block::OVERHEAD + size as isize) };
+            match self.truncate(size + Self::Block::OVERHEAD as usize) {
+                TruncResult::Success => {
+                    new_tail = unsafe { self.tail_ptr().offset(Self::Block::OVERHEAD + size as isize) };
                 }
                 _ => return ptr::null_mut(),
             }
         }
 
-        let block = Self::Block::from_ptr(self.tail);
-        self.tail = new_tail;
+        let block = Self::Block::from_ptr(self.tail_ptr());
 
         // update entire message size
-        H::raw_set_size(self.head, new_size);
+        H::raw_set_size(self.root, new_size);
         // set the block's size
         block.set_size_usize(size);
 
@@ -309,7 +333,7 @@ impl<H, G, A> Builder for Appender<H, G, A>
             return ptr::null_mut();
         }
         let current_size = self.size();
-        let offset = Self::Block::offset(self.base, block);
+        let offset = Self::Block::offset(self.root, block);
 
         // out of bounds?
         if offset < 0 || offset > current_size as isize - Self::Block::MIN_SIZE {
@@ -323,30 +347,30 @@ impl<H, G, A> Builder for Appender<H, G, A>
             let new_size = current_size - current_block_size + size;
 
             if current_block_size >= size {
-                H::raw_set_size(self.head, new_size);
+                H::raw_set_size(self.root, new_size);
                 return block;
             }
 
             let mut new_tail = unsafe {
-                self.tail.offset(Self::Block::OVERHEAD + size as isize)
+                self.tail_ptr().offset(Self::Block::OVERHEAD + size as isize)
             };
             // Resize required?
             if new_tail > self.end {
-                match self.grow(size + Self::Block::OVERHEAD as usize) {
-                    GrowResult::Success => {
-                        new_tail = unsafe { self.tail.offset(Self::Block::OVERHEAD + size as isize) };
+                match self.truncate(size + Self::Block::OVERHEAD as usize) {
+                    TruncResult::Success => {
+                        new_tail = unsafe { self.tail_ptr().offset(Self::Block::OVERHEAD + size as isize) };
                     }
                     _ => return ptr::null_mut(),
                 }
 
-                H::raw_set_size(self.head, new_size);
+                H::raw_set_size(self.root, new_size);
                 let block = Self::Block::from_ptr(
-                    unsafe { self.base.offset(offset) }
+                    unsafe { self.root.offset(offset) }
                 );
                 block.set_size_usize(size);
                 return block;
             } else {
-                H::raw_set_size(self.head, new_size);
+                H::raw_set_size(self.root, new_size);
                 block.set_size_usize(size);
                 return block;
             }
@@ -362,7 +386,7 @@ impl<H, G, A> Builder for Appender<H, G, A>
             return ptr::null_mut();
         }
         // deref block based on original offset since append may have to create a new allocation
-        let block = Self::Block::from_ptr(unsafe { self.base.offset(offset) });
+        let block = Self::Block::from_ptr(unsafe { self.root.offset(offset) });
         unsafe {
             ptr::copy_nonoverlapping(
                 block.data_ptr(),
@@ -378,7 +402,7 @@ impl<H, G, A> Builder for Appender<H, G, A>
 
     fn deallocate(&mut self, block: &mut Self::Block) {
         let current_size = self.size();
-        let offset = Self::Block::offset(self.base, block);
+        let offset = Self::Block::offset(self.root, block);
 
         // out of bounds?
         if offset < 0 || offset > current_size as isize - Self::Block::MIN_SIZE {
@@ -391,7 +415,7 @@ impl<H, G, A> Builder for Appender<H, G, A>
 
         let block_size = block.size_usize();
         if current_size == offset as usize + Self::Block::OVERHEAD as usize + block_size {
-            H::raw_set_size(self.head, offset as usize);
+            H::raw_set_size(self.root, offset as usize);
             return;
         }
 
@@ -399,13 +423,14 @@ impl<H, G, A> Builder for Appender<H, G, A>
     }
 }
 
+
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
-    use crate::message::Base;
+    use crate::header::Flex16;
+
     use super::*;
 
-    pub trait Order {
+    pub trait Order<'a> {
         fn id(&self) -> u64;
 
         fn set_id(&mut self, id: u64) -> &mut Self;
@@ -413,7 +438,7 @@ mod tests {
         fn client_id(&self) -> &str;
     }
 
-    pub trait OrderBuilder {
+    pub trait OrderBuilder<'a>: Order<'a> {
         fn set_client_id(&mut self, value: &str) -> &mut Self;
     }
 
@@ -429,94 +454,48 @@ mod tests {
         }
     }
 
-    pub struct OrderSafe<H: Header + Header16 = Fixed16> {
+    pub struct OrderSafe<'a> {
         p: *const Order16,
-        base: message::Base<H>,
+        _p: PhantomData<(&'a ())>,
     }
 
-    impl<H: Header + Header16> message::Record for OrderSafe<H> {
-        type Header = H;
-        type Layout = Order16;
+    //////////////////////////////////////////////////////////////////////////////////////////
+    // OrderBuilder Root
+    //////////////////////////////////////////////////////////////////////////////////////////
 
-        const SIZE: usize = core::mem::size_of::<Order16>();
+    pub struct OrderBuilderRoot<'a, B: Builder> {
+        builder: B,
+        // owns the builder
+        _phantom: PhantomData<(&'a ())>,
+    }
 
-        fn new(p: *const u8, _: *const u8, m: Base<Self::Header>) -> Self {
-            Self { p: unsafe { p as *const Order16 }, base: m }
+    impl<'a, B: Builder> BuilderRef<'a, B> for OrderBuilderRoot<'a, B> {
+        fn builder_mut(&mut self) -> *mut B {
+            unsafe { &mut self.builder as *mut B }
         }
     }
 
-    impl<H: Header + Header16> core::ops::Deref for OrderSafe<H> {
-        type Target = Order16;
-
-        fn deref(&self) -> &Self::Target {
-            unsafe { &*self.p }
-        }
-    }
-
-    impl<H: Header + Header16> core::ops::DerefMut for OrderSafe<H> {
-        fn deref_mut(&mut self) -> &mut Self::Target {
-            unsafe { &mut *(self.p as *mut Self::Target) }
-        }
-    }
-
-    pub struct OrderBuilder16<
-        H: Header + Header16,
-        B: Builder<Header=H, Block=H::Block>,
-        C: message::Record<Header=H>> {
-        builder: *mut B,
-        offset: isize,
-        _phantom: PhantomData<C>,
-    }
-
-    impl<H, B, C> Record for OrderBuilder16<H, B, C>
-        where
-            H: Header + Header16,
-            B: Builder<Header=H, Block=H::Block>,
-            C: message::Record<Header=H> {
-        type Header = H;
+    impl<'a, B: Builder> Record<'a> for OrderBuilderRoot<'a, B> {
         type Builder = B;
-        type Completed = C;
 
-        const SIZE: usize = core::mem::size_of::<Order16>() as usize;
+        const SIZE: usize = mem::size_of::<Order16>() as usize;
+    }
 
-        fn new(offset: isize, builder: *mut Self::Builder) -> Self {
-            Self {
-                builder,
-                offset,
-                _phantom: PhantomData,
-            }
+    impl<'a, B: Builder> Root<'a, B> for OrderBuilderRoot<'a, B> {
+        fn new(builder: Self::Builder) -> Self {
+            Self { builder, _phantom: PhantomData }
         }
     }
 
-    impl<H, B, C> OrderBuilder16<H, B, C>
-        where
-            H: Header + Header16,
-            B: Builder<Header=H, Block=H::Block>,
-            C: message::Record<Header=H> {
-        #[inline(always)]
-        fn unsafe_mut(&self) -> &mut Order16 {
-            unsafe { &mut *((&*self.builder).base_ptr().offset(self.offset) as *mut Order16) }
-        }
-
-        #[inline(always)]
-        fn builder(&mut self) -> &mut B {
-            unsafe { &mut *self.builder }
-        }
-    }
-
-    impl<H, B, C> Order for OrderBuilder16<H, B, C>
-        where
-            H: Header + Header16,
-            B: Builder<Header=H, Block=H::Block>,
-            C: message::Record<Header=H> {
+    impl<'a, B: Builder> Order<'a> for OrderBuilderRoot<'a, B> {
         #[inline(always)]
         fn id(&self) -> u64 {
-            self.unsafe_mut().id
+            self.deref().id
         }
 
         #[inline(always)]
         fn set_id(&mut self, id: u64) -> &mut Self {
-            self.unsafe_mut().id = id;
+            self.deref_mut().id = id;
             self
         }
 
@@ -526,14 +505,86 @@ mod tests {
         }
     }
 
-    impl<H, B, C> OrderBuilder for OrderBuilder16<H, B, C>
-        where
-            H: Header + Header16,
-            B: Builder<Header=H, Block=H::Block>,
-            C: message::Record<Header=H> {
+    impl<'a, B: Builder> OrderBuilder<'a> for OrderBuilderRoot<'a, B> {
         #[inline(always)]
         fn set_client_id(&mut self, value: &str) -> &mut Self {
-            let block = self.builder().append(value.len());
+            // let block = self.builder().append(value.len());
+            self
+        }
+    }
+
+    impl<'a, B: Builder> OrderBuilderRoot<'a, B> {
+        fn deref(&self) -> &Order16 {
+            unsafe { &*(self.builder.offset(B::BASE_OFFSET) as *const Order16) }
+        }
+        fn deref_mut(&mut self) -> &mut Order16 {
+            unsafe { &mut *(self.builder.offset(B::BASE_OFFSET) as *mut Order16) }
+        }
+    }
+
+    //////////////////////////////////////////////////////////////////////////////////////////
+    // OrderBuilder Nested
+    //////////////////////////////////////////////////////////////////////////////////////////
+
+    pub struct OrderBuilderNested<'a, B: Builder> {
+        builder: *mut B,
+        offset: isize,
+        _phantom: PhantomData<(&'a ())>,
+    }
+
+    impl<'a, B: Builder> Record<'a> for OrderBuilderNested<'a, B> {
+        type Builder = B;
+
+        const SIZE: usize = mem::size_of::<Order16>() as usize;
+    }
+
+    impl<'a, B: Builder> BuilderRef<'a, B> for OrderBuilderNested<'a, B> {
+        fn builder_mut(&mut self) -> *mut B {
+            self.builder
+        }
+    }
+
+    impl<'a, B: Builder> OrderBuilderNested<'a, B> {
+        fn new(offset: isize, bounds: isize, builder: *mut B) -> Self {
+            Self {
+                builder,
+                offset,
+                _phantom: PhantomData,
+            }
+        }
+    }
+
+    impl<'a, B: Builder> OrderBuilderNested<'a, B> {
+        fn deref(&self) -> &Order16 {
+            unsafe { &*((&*self.builder).offset(self.offset) as *mut Order16) }
+        }
+        fn deref_mut(&mut self) -> &mut Order16 {
+            unsafe { &mut *((&*self.builder).offset(self.offset) as *mut Order16) }
+        }
+    }
+
+    impl<'a, B: Builder> Order<'a> for OrderBuilderNested<'a, B> {
+        #[inline(always)]
+        fn id(&self) -> u64 {
+            self.deref().id
+        }
+
+        #[inline(always)]
+        fn set_id(&mut self, id: u64) -> &mut Self {
+            self.deref_mut().id = id;
+            self
+        }
+
+        #[inline(always)]
+        fn client_id(&self) -> &str {
+            ""
+        }
+    }
+
+    impl<'a, B: Builder> OrderBuilder<'a> for OrderBuilderNested<'a, B> {
+        #[inline(always)]
+        fn set_client_id(&mut self, value: &str) -> &mut Self {
+            // let block = self.builder().append(value.len());
             self
         }
     }
@@ -541,18 +592,15 @@ mod tests {
     pub struct OrderMessage;
 
     impl OrderMessage {
-        fn new() -> Option<Message<
-            Fixed16, Appender<Fixed16>,
-            OrderSafe<Fixed16>,
-            OrderBuilder16<Fixed16, Appender<Fixed16>, OrderSafe<Fixed16>>>> {
-
-            let m = Appender::<Fixed16, Doubled, Global>::new::
-            <OrderSafe<Fixed16>, OrderBuilder16<Fixed16, Appender<Fixed16, Doubled, Global>, OrderSafe<Fixed16>>>
-                (32);
-            m
+        fn new<'a>() -> Option<Message<'a,
+            Appender::<Flex16, Doubled, Global>,
+            OrderBuilderRoot<'a, Appender::<Flex16, Doubled, Global>>>> {
+            Appender::<Flex16, Doubled, Global>::new
+                ::<OrderBuilderRoot<'a, Appender::<Flex16, Doubled, Global>>>
+                (32)
         }
 
-        fn copy(src: &impl Order, dst: &mut (impl Order + OrderBuilder)) {
+        fn copy<'a, 'b>(src: &impl Order<'a>, dst: &mut impl OrderBuilder<'b>) {
             dst.set_id(src.id()).
                 set_client_id(src.client_id());
         }
@@ -560,68 +608,42 @@ mod tests {
 
     // pub type OrderType = impl Order + OrderBuilder;
 
-    fn process(order: &mut (impl Order + OrderBuilder)) {
+    fn process<'a>(order: &mut impl OrderBuilder<'a>) {
         println!("order");
     }
 
-    fn process_builder(order: &mut impl OrderBuilder) {}
+    fn process_builder<'a>(order: &mut impl OrderBuilder<'a>) {}
 
-    struct C;
+    // fn build() -> impl BTrait {
+    fn build() {
+        // fn build<'a>() -> &'a mut OrderBuilder16<'a, Appender<Fixed16>> {
+        let mut message = OrderMessage::new().unwrap();
+        message.set_id(11);
+        message.builder_mut();
+        message.set_id(12);
 
-    struct A {
-        c: C,
-        // b: B<'a>,
-        // _phantom: PhantomData<(&'a ())>,
-    }
+        // let order = message.finish();
+        println!("id: {:}", message.id());
 
-    // impl A {
-    //     fn new<'a>() -> A<'a> {
-    //         Self { _phantom: PhantomData }
-    //     }
-    // }
-
-    impl A {
-        fn new() -> A {
-            Self {
-                c: C {},
-                // _phantom: PhantomData
-            }
-        }
-
-        fn b(&mut self) -> B {
-            B::new(&mut self.c)
-        }
-    }
-
-    struct B<'a> {
-        a: &'a mut C,
-    }
-
-    impl<'a> B<'a> {
-        fn new(a: &'a mut C) -> Self {
-            Self { a }
-        }
-    }
-
-    #[test]
-    fn lifetime() {
-        let mut a = A::new();
-        let mut b = a.b();
-        let mut b = B::new(&mut a.c);
-        // let mut b = a.b();
-        // let mut c = a;
+        // let mut order = message.base();
+        // order.set_id(10);
+        // order.set_client_id("");
+        // message.finish();
+        // order
     }
 
     #[test]
     fn builder_test() {
-        let mut o = OrderMessage::new().unwrap();
-        o.record().set_id(11);
-        o.build(|b| {
-            // let o = b.unsafe_mut();
-            // b.set_id(12);
-            process(b);
-        });
-        let m = o.finish();
+        build();
+        let mut message = OrderMessage::new().unwrap();
+        // let mut order = message.base();
+        println!("id: {:}", message.id());
+        // message.build(|b| {
+        //     // let o = b.unsafe_mut();
+        //     // b.set_id(12);
+        //     process(b);
+        // });
+        // let m = message.finish();
 
         println!("done");
     }

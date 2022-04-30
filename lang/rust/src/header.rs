@@ -3,7 +3,6 @@ use std::mem;
 
 use crate::block;
 use crate::block::Block;
-use crate::message::Flex;
 
 pub trait Header {
     type Block: Block;

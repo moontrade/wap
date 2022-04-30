@@ -1,7 +1,6 @@
-// use futures::executor::block_on;
 #![feature(test)]
 
-// extern crate wee_alloc;
+extern crate wee_alloc;
 
 use std::alloc::{alloc, dealloc, GlobalAlloc, Layout};
 use std::future::Future;

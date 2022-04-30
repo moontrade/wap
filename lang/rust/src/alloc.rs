@@ -1,5 +1,6 @@
-use std::alloc::{alloc, alloc_zeroed, dealloc, Layout, realloc};
 use core::ptr;
+use std::alloc::{alloc, alloc_zeroed, dealloc, Layout, realloc};
+use std::ptr::NonNull;
 
 pub trait Allocator {
     fn allocate(size: usize) -> *mut u8;
@@ -18,7 +19,10 @@ impl Allocator for Global {
     }
 
     fn deallocate(p: *mut u8, size: usize) {
-        unsafe { dealloc(p, Layout::from_size_align_unchecked(size, 1)) }
+        // unsafe { ptr::drop_in_place(p); }
+        unsafe { Box::from_raw(p); }
+        // unsafe { std::alloc::Global.deallocate(NonNull::new(p), Layout::from_size_align_unchecked(size, 1)); }
+        // unsafe { dealloc(p, Layout::from_size_align_unchecked(size, 1)) }
     }
 
     fn deallocate_layout(p: *mut u8, layout: Layout) {
@@ -69,7 +73,7 @@ impl Grow for Minimal {
     }
 }
 
-pub enum GrowResult {
+pub enum TruncResult {
     Success = 0,
     OutOfMemory = 1,
     Overflow = 2,
