@@ -427,6 +427,17 @@ mod tests {
         };
     }
 
+    macro_rules! variant_visit2 {
+        ($a:expr, $b:ident, $closure:tt) => {
+            {
+                match &$a {
+                    Variant::X(xx) => $closure(xx),
+                    Variant::Y(yy) => $closure(yy)
+                }
+            }
+        };
+    }
+
     #[test]
     fn graph() {
         let x = Variant::<DSafe, DUnsafe>::X(DSafe::new());
@@ -439,17 +450,15 @@ mod tests {
 
         let mut rand = Rand::new(13);
         variant_visit!(x, ({
-            #[inline(always)]
-            fn visit(v: &impl D, r: u64) {
+            fn v0(v: &impl D, r: u64) {
                 v.print();
             }
             |d| {
-                rand.next();
-                visit(d, rand.next());
+                v0(d, 0);
             }
         }));
 
-        variant_visit!(x, visit_it);
+        // variant_visit2!(x, &impl D, visit_it);
     }
 
     extern crate test;
@@ -470,6 +479,7 @@ mod tests {
             variant_visit!(x, (|d| {
                 let vv = rand.next();
                 for i in 1u64..10000u64 {
+                    let vv = rand.next();
                     visit(d, vv);
                 }
             }));

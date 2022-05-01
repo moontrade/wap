@@ -21,7 +21,7 @@ pub trait IsFlex {}
 // }
 //
 // pub trait WithHeader<'a> {
-//     type Header: 'a + Header;
+//     type Header: Header;
 // }
 //
 // pub trait WithLayout<'a> {
@@ -29,14 +29,14 @@ pub trait IsFlex {}
 // }
 //
 // pub trait WithRecord<'a> {
-//     type Record: Message<'a>;
+//     type Record: Message;
 // }
 
-pub trait Message<'a> {
+pub trait Message {
     type Header: Header;
     type Layout: Sized;
-    type Safe: Provider<'a>;
-    type Unsafe: UnsafeProvider<'a>;
+    type Safe: Provider;
+    type Unsafe: UnsafeProvider;
 
     const SIZE: usize;
     const INITIAL_SIZE: usize;
@@ -53,21 +53,22 @@ pub trait BasePointer {
     fn base_ptr(&self) -> *const u8;
 }
 
-pub trait Provider<'a> {
+pub trait Provider {
     fn new(base: *const u8) -> Self;
 
     fn base_ptr(&self) -> *const u8;
 }
 
-pub trait UnsafeProvider<'a> {
+pub trait UnsafeProvider {
     fn new(base: *const u8, bounds: *const u8) -> Self;
 
     fn base_ptr(&self) -> *const u8;
 }
 
-pub trait Box<'a>: Deref<Target=Self::Root> + DerefMut {
+// pub trait Box: Deref<Target=Self::Root> + DerefMut {
+pub trait Box {
     type Header: Header;
-    type Message: Message<'a>;
+    type Message: Message;
     type Allocator: Allocator;
     type Root: Sized;
 
@@ -82,15 +83,73 @@ pub trait Box<'a>: Deref<Target=Self::Root> + DerefMut {
     fn header_mut(&mut self) -> &mut Self::Header;
 }
 
+pub struct Inner<'a, A, B>(&'a mut A, B);
+
+impl<'a, A, B> Deref for Inner<'a, A, B> {
+    type Target = B;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.1
+    }
+}
+
+pub struct InnerMut<'a, A, B>(pub &'a mut A, B);
+
+impl<'a, A, B> Deref for InnerMut<'a, A, B> {
+    type Target = B;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.1
+    }
+}
+
+impl<'a, A, B> DerefMut for InnerMut<'a, A, B> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.1
+    }
+}
+
+pub struct Slice<'a, B>(B, PhantomData<(&'a ())>);
+
+impl<'a, B> Deref for Slice<'a, B> {
+    type Target = B;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+pub struct SliceMut<'a, B>(B, PhantomData<(&'a ())>);
+
+impl<'a, B> Deref for SliceMut<'a, B> {
+    type Target = B;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, B> DerefMut for SliceMut<'a, B> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Safe Box
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-pub struct Safe<'a, M: 'a + Message<'a>, A: Allocator = Global> {
+pub struct Safe<M: Message, A: Allocator = Global> {
     root: M::Safe,
-    _p: PhantomData<(&'a (), M, A)>,
+    _p: PhantomData<(M, A)>,
 }
 
-impl<'a, R: 'a + Message<'a>, A: Allocator> Safe<'a, R, A> {
+impl<R: Message, A: Allocator> Safe<R, A> {
     pub fn new() -> Option<Self> {
         let size = R::INITIAL_SIZE;
         let p = A::allocate(size);
@@ -102,30 +161,46 @@ impl<'a, R: 'a + Message<'a>, A: Allocator> Safe<'a, R, A> {
 
         Some(Self { root: R::Safe::new(unsafe { p.offset(R::Header::SIZE) }), _p: PhantomData })
     }
-}
 
-impl<'a, M: 'a + Message<'a>, A: Allocator> Deref for Safe<'a, M, A> {
-    type Target = M::Safe;
-
-    fn deref(&self) -> &Self::Target {
+    pub fn base(&self) -> &R::Safe {
         &self.root
     }
-}
 
-impl<'a, M: 'a + Message<'a>, A: Allocator> DerefMut for Safe<'a, M, A> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.root
+    pub fn base_mut0(&mut self) -> InnerMut<Self, R::Safe> {
+        InnerMut(self, R::Safe::new(self.root.base_ptr()))
     }
+
+    pub fn base_mut(&mut self) -> SliceMut<R::Safe> {
+        SliceMut(R::Safe::new(self.root.base_ptr()), PhantomData)
+    }
+
+    // pub fn base_mut(&mut self) -> R::Safe {
+    //     R::Safe::new(self.root.base_ptr())
+    // }
 }
 
-impl<'a, M: 'a + Message<'a>, A: Allocator> Box<'a> for Safe<'a, M, A> {
+// impl<'a, M: Message, A: Allocator> Deref for Safe<'a, M, A> {
+//     type Target = M::Safe;
+//
+//     fn deref(&self) -> &Self::Target {
+//         &self.root
+//     }
+// }
+//
+// impl<'a, M: Message, A: Allocator> DerefMut for Safe<'a, M, A> {
+//     fn deref_mut(&mut self) -> &mut Self::Target {
+//         &mut self.root
+//     }
+// }
+
+impl<M: Message, A: Allocator> Box for Safe<M, A> {
     type Header = M::Header;
     type Message = M;
     type Allocator = A;
     type Root = M::Safe;
 
     fn offset(&self, offset: usize) -> *const u8 {
-        unsafe { self.base_ptr().offset(-M::Header::SIZE + offset as isize) }
+        unsafe { self.root.base_ptr().offset(-M::Header::SIZE + offset as isize) }
     }
 
     fn size(&self) -> usize {
@@ -137,17 +212,17 @@ impl<'a, M: 'a + Message<'a>, A: Allocator> Box<'a> for Safe<'a, M, A> {
     }
 
     fn header(&self) -> &M::Header {
-        unsafe { &*(self.base_ptr().offset(-M::Header::SIZE) as *mut M::Header) }
+        unsafe { &*(self.root.base_ptr().offset(-M::Header::SIZE) as *mut M::Header) }
     }
 
     fn header_mut(&mut self) -> &mut M::Header {
-        unsafe { &mut *(self.base_ptr().offset(-M::Header::SIZE) as *mut M::Header) }
+        unsafe { &mut *(self.root.base_ptr().offset(-M::Header::SIZE) as *mut M::Header) }
     }
 }
 
-impl<'a, R: 'a + Message<'a>, A: Allocator> Drop for Safe<'a, R, A> {
+impl<R: Message, A: Allocator> Drop for Safe<R, A> {
     fn drop(&mut self) {
-        let h = unsafe { self.base_ptr().offset(-R::Header::SIZE) as *mut u8 };
+        let h = unsafe { self.root.base_ptr().offset(-R::Header::SIZE) as *mut u8 };
         A::deallocate(h, self.capacity())
     }
 }
@@ -155,12 +230,12 @@ impl<'a, R: 'a + Message<'a>, A: Allocator> Drop for Safe<'a, R, A> {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Unsafe - Capacity is fixed based on a const core::alloc::Layout
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-pub struct Unsafe<'a, M: 'a + Message<'a>, A: Allocator = Global> {
+pub struct Unsafe<M: Message, A: Allocator = Global> {
     root: M::Unsafe,
-    _p: PhantomData<(&'a (), M, A)>,
+    _p: PhantomData<(M, A)>,
 }
 
-impl<'a, M: 'a + Message<'a>, A: Allocator> Unsafe<'a, M, A> {
+impl<M: Message, A: Allocator> Unsafe<M, A> {
     pub fn new() -> Option<Self> {
         let size = M::INITIAL_SIZE;
         let p = A::allocate(size);
@@ -178,7 +253,7 @@ impl<'a, M: 'a + Message<'a>, A: Allocator> Unsafe<'a, M, A> {
     }
 }
 
-impl<'a, M: 'a + Message<'a>, A: Allocator> Deref for Unsafe<'a, M, A> {
+impl<M: Message, A: Allocator> Deref for Unsafe<M, A> {
     type Target = M::Unsafe;
 
     fn deref(&self) -> &Self::Target {
@@ -186,20 +261,20 @@ impl<'a, M: 'a + Message<'a>, A: Allocator> Deref for Unsafe<'a, M, A> {
     }
 }
 
-impl<'a, M: 'a + Message<'a>, A: Allocator> DerefMut for Unsafe<'a, M, A> {
+impl<M: Message, A: Allocator> DerefMut for Unsafe<M, A> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.root
     }
 }
 
-impl<'a, M: 'a + Message<'a>, A: Allocator> Box<'a> for Unsafe<'a, M, A> {
+impl<M: Message, A: Allocator> Box for Unsafe<M, A> {
     type Header = M::Header;
     type Message = M;
     type Allocator = A;
     type Root = M::Unsafe;
 
     fn offset(&self, offset: usize) -> *const u8 {
-        unsafe { self.base_ptr().offset(-M::Header::SIZE + offset as isize) }
+        unsafe { self.root.base_ptr().offset(-M::Header::SIZE + offset as isize) }
     }
 
     fn size(&self) -> usize {
@@ -211,17 +286,17 @@ impl<'a, M: 'a + Message<'a>, A: Allocator> Box<'a> for Unsafe<'a, M, A> {
     }
 
     fn header(&self) -> &M::Header {
-        unsafe { &*(self.base_ptr().offset(-M::Header::SIZE) as *mut M::Header) }
+        unsafe { &*(self.root.base_ptr().offset(-M::Header::SIZE) as *mut M::Header) }
     }
 
     fn header_mut(&mut self) -> &mut M::Header {
-        unsafe { &mut *(self.base_ptr().offset(-M::Header::SIZE) as *mut M::Header) }
+        unsafe { &mut *(self.root.base_ptr().offset(-M::Header::SIZE) as *mut M::Header) }
     }
 }
 
-impl<'a, M: 'a + Message<'a>, A: Allocator> Drop for Unsafe<'a, M, A> {
+impl<M: Message, A: Allocator> Drop for Unsafe<M, A> {
     fn drop(&mut self) {
-        let h = unsafe { self.base_ptr().offset(-M::Header::SIZE) as *mut u8 };
+        let h = unsafe { self.root.base_ptr().offset(-M::Header::SIZE) as *mut u8 };
         A::deallocate(h, self.capacity())
     }
 }
@@ -239,28 +314,26 @@ mod tests {
 
     use super::*;
 
-    pub trait Order<'a> {
-        type Price: Price<'a>;
+    pub trait Order {
+        type Price: Price;
 
         fn id(&self) -> u64;
 
         fn set_id(&mut self, value: u64) -> &mut Self;
 
-        fn price(&'a self) -> Self::Price;
+        fn price(&self) -> Slice<Self::Price>;
 
-        fn price_mut(&mut self) -> (Self::Price, &mut Self);
-
-        fn set_price<'b>(&'a mut self, price: impl Price<'b>) -> &'a mut Self;
+        fn price_mut(&mut self) -> SliceMut<Self::Price>;
     }
 
-    pub trait OrderBuilder<'a>: Order<'a> {
+    pub trait OrderBuilder: Order {
         fn set_client_id(&mut self, value: &str) -> &mut Self;
     }
 
-    pub trait Price<'a> {
-        fn wap_hash(&self) -> u64;
+    pub trait Price {
+        // fn wap_hash(&self) -> u64;
 
-        fn copy_to<'b>(&self, to: &mut impl Price<'b>);
+        // fn copy_to<'b>(&self, to: &mut impl Price);
 
         fn open(&self) -> f64;
         fn high(&self) -> f64;
@@ -274,12 +347,18 @@ mod tests {
     }
 
 
+    // pub trait PriceMutable: Price {
+    //
+    // }
+
+
     /////////////////////////////////////////////////////////////////////////////
     // Order - Layout
     /////////////////////////////////////////////////////////////////////////////
     #[repr(C, packed)]
     pub struct OrderData {
         id: u64,
+        client_id: [u8; 10],
         price: PriceData,
     }
 
@@ -287,13 +366,13 @@ mod tests {
     // OrderMessage
     //////////////////////////////////////////////////////////////////////////////
 
-    pub struct OrderMessage<'a, H: 'a + Header = Flex16>(PhantomData<(&'a (), H)>);
+    pub struct OrderMessage<H: Header = Flex16>(PhantomData<H>);
 
-    impl<'a, H: 'a + Header> Message<'a> for OrderMessage<'a, H> {
+    impl<H: Header> Message for OrderMessage<H> {
         type Header = H;
         type Layout = OrderData;
-        type Safe = OrderProvider<'a, Self>;
-        type Unsafe = OrderUnsafeProvider<'a, Self>;
+        type Safe = OrderProvider<Self>;
+        type Unsafe = OrderUnsafe<Self>;
 
         const SIZE: usize = mem::size_of::<Self::Layout>();
         const INITIAL_SIZE: usize = H::SIZE as usize + Self::SIZE;
@@ -302,22 +381,22 @@ mod tests {
         const BASE_SIZE: isize = Self::SIZE as isize;
     }
 
-    impl<'a> OrderMessage<'a, Flex16> {
-        pub fn new() -> Option<Safe<'a, OrderMessage<'a, Flex16>>> {
+    impl OrderMessage<Flex16> {
+        pub fn new() -> Option<Safe<OrderMessage<Flex16>>> {
             Safe::new()
         }
 
-        pub fn new_unsafe() -> Option<Unsafe<'a, OrderMessage<'a, Flex16>>> {
+        pub fn new_unsafe() -> Option<Unsafe<OrderMessage<Flex16>>> {
             Unsafe::new()
         }
     }
 
-    impl<'a, H: Header + Header16> OrderMessage<'a, H> {
-        pub fn new_with_header() -> Option<Safe<'a, OrderMessage<'a, H>>> {
+    impl<H: Header + Header16> OrderMessage<H> {
+        pub fn new_with_header() -> Option<Safe<OrderMessage<H>>> {
             Safe::new()
         }
 
-        pub fn new_unsafe_with_header() -> Option<Unsafe<'a, OrderMessage<'a, H>>> {
+        pub fn new_unsafe_with_header() -> Option<Unsafe<OrderMessage<H>>> {
             Unsafe::new()
         }
     }
@@ -326,12 +405,12 @@ mod tests {
     // OrderSafe
     ////////////////////////////////////////////////////////////////////////////////////////////////
 
-    pub struct OrderProvider<'a, R: 'a + Message<'a>> {
+    pub struct OrderProvider<R: Message> {
         base: *const OrderData,
-        _p: PhantomData<(&'a (), R)>,
+        _p: PhantomData<(R)>,
     }
 
-    impl<'a, R: 'a + Message<'a>> Provider<'a> for OrderProvider<'a, R> {
+    impl<R: Message> Provider for OrderProvider<R> {
         fn new(base: *const u8) -> Self {
             Self { base: unsafe { base as *const OrderData }, _p: PhantomData }
         }
@@ -341,8 +420,8 @@ mod tests {
         }
     }
 
-    impl<'a, R: 'a + Message<'a>> Order<'a> for OrderProvider<'a, R> {
-        type Price = PriceProvider<'a, R>;
+    impl<R: Message> Order for OrderProvider<R> {
+        type Price = impl Price;
 
         fn id(&self) -> u64 {
             unsafe { (&*(self.base)).id }
@@ -353,29 +432,25 @@ mod tests {
             self
         }
 
-        fn price(&'a self) -> Self::Price {
-            Self::Price::new(unsafe { (self.base as *const u8).offset(10) })
+        fn price(&self) -> Slice<Self::Price> {
+            Slice(PriceSafe::<R>::new(unsafe { (self.base as *const u8).offset(10) }), PhantomData)
         }
 
-        fn price_mut(&mut self) -> (Self::Price, &mut Self) {
-            (Self::Price::new(unsafe { (self.base as *const u8).offset(10) }), self)
-        }
-
-        fn set_price<'b>(&'a mut self, price: impl Price<'b>) -> &'a mut Self {
-            self
+        fn price_mut(&mut self) -> SliceMut<Self::Price> {
+            SliceMut(PriceSafe::<R>::new(unsafe { (self.base as *const u8).offset(10) }), PhantomData)
         }
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////
     // OrderUnsafe
     ////////////////////////////////////////////////////////////////////////////////////////////////
-    pub struct OrderUnsafeProvider<'a, R: 'a + Message<'a>> {
+    pub struct OrderUnsafe<R: Message> {
         base: *const OrderData,
         bounds: *const u8,
-        _p: PhantomData<(&'a (), R)>,
+        _p: PhantomData<(R)>,
     }
 
-    impl<'a, R: 'a + Message<'a>> UnsafeProvider<'a> for OrderUnsafeProvider<'a, R> {
+    impl<R: Message> UnsafeProvider for OrderUnsafe<R> {
         fn new(base: *const u8, bounds: *const u8) -> Self {
             Self { base: unsafe { base as *const OrderData }, bounds, _p: PhantomData }
         }
@@ -385,40 +460,38 @@ mod tests {
         }
     }
 
-
-    pub struct OrderNestedProvider<'a, R: 'a + Message<'a>> {
+    pub struct OrderNested<R: Message> {
         base: *const OrderData,
         root: *const u8,
-        _p: PhantomData<(&'a (), R)>,
+        _p: PhantomData<(R)>,
     }
 
-    pub struct OrderUnsafeNestedProvider<'a, R: 'a + Message<'a>> {
+    pub struct OrderUnsafeNested<R: Message> {
         base: *const OrderData,
         bounds: *const u8,
         root: *const u8,
-        _p: PhantomData<(&'a (), R)>,
+        _p: PhantomData<(R)>,
     }
 
-    impl<'a, R: 'a + Message<'a>> OrderNestedProvider<'a, R> {
+    impl<R: Message> OrderNested<R> {
         fn new(base: *const u8, root: *const u8) -> Self {
             Self { base: unsafe { base as *const OrderData }, root, _p: PhantomData }
         }
     }
 
-    impl<'a, R: 'a + Message<'a>> OrderUnsafeNestedProvider<'a, R> {
+    impl<R: Message> OrderUnsafeNested<R> {
         fn new(base: *const u8, bounds: *const u8, root: *const u8) -> Self {
             Self { base: unsafe { base as *const OrderData }, bounds, root, _p: PhantomData }
         }
     }
 
+    pub struct PriceMessage<H: Header>(PhantomData<H>);
 
-    pub struct PriceMessage<'a, H: 'a + Header>(PhantomData<(&'a (), H)>);
-
-    impl<'a, H: 'a + Header> Message<'a> for PriceMessage<'a, H> {
+    impl<H: Header> Message for PriceMessage<H> {
         type Header = H;
         type Layout = PriceData;
-        type Safe = PriceProvider<'a, Self>;
-        type Unsafe = PriceUnsafeProvider<'a, Self>;
+        type Safe = PriceSafe<Self>;
+        type Unsafe = PriceUnsafe<Self>;
 
         const SIZE: usize = mem::size_of::<Self::Layout>();
         const INITIAL_SIZE: usize = H::SIZE as usize + Self::SIZE;
@@ -427,146 +500,116 @@ mod tests {
         const BASE_SIZE: isize = Self::SIZE as isize;
     }
 
-    impl<'a> PriceMessage<'a, Fixed16> {
-        pub fn new() -> Option<Safe<'a, PriceMessage<'a, Fixed16>>> {
+    impl PriceMessage<Fixed16> {
+        pub fn new() -> Option<Safe<PriceMessage<Fixed16>>> {
             Safe::new()
         }
     }
 
-    pub struct PriceProvider<'a, R: 'a + Message<'a>> {
-        base: *const PriceData,
-        _p: PhantomData<(&'a (), R)>,
-    }
+    pub struct PriceSafe<R: Message>(*const PriceData, PhantomData<R>);
 
-    impl<'a, R: 'a + Message<'a>> Provider<'a> for PriceProvider<'a, R> {
+    impl<R: Message> Provider for PriceSafe<R> {
         fn new(base: *const u8) -> Self {
-            Self { base: unsafe { base as *const PriceData }, _p: PhantomData }
+            Self(unsafe { base as *const PriceData }, PhantomData)
         }
 
         fn base_ptr(&self) -> *const u8 {
-            unsafe { self.base as *const u8 }
+            unsafe { self.0 as *const u8 }
         }
     }
 
-    impl<'a, R: 'a + Message<'a>> Price<'a> for PriceProvider<'a, R> {
-        #[inline(always)]
-        fn wap_hash(&self) -> u64 {
-            hash_default(unsafe { self.base as *const u8 },
-                         mem::size_of::<PriceData>() as u64)
-        }
-
-        #[inline(always)]
-        fn copy_to<'b>(&self, to: &mut impl Price<'b>) {
-            copy_price(self, to);
-        }
-
+    impl<R: Message> Price for PriceSafe<R> {
         #[inline(always)]
         fn open(&self) -> f64 {
-            unsafe { (&*self.base).open() }
+            unsafe { (&*self.0).open() }
         }
 
         #[inline(always)]
         fn high(&self) -> f64 {
-            unsafe { (&*self.base).high() }
+            unsafe { (&*self.0).high() }
         }
 
         #[inline(always)]
         fn low(&self) -> f64 {
-            unsafe { (&*self.base).low() }
+            unsafe { (&*self.0).low() }
         }
 
         #[inline(always)]
         fn close(&self) -> f64 {
-            unsafe { ((&*self.base)).close() }
+            unsafe { (&*self.0).close() }
         }
 
         #[inline(always)]
         fn set_open(&mut self, value: f64) -> &mut Self {
-            unsafe { (&mut *(self.base as *mut PriceData)).set_open(value); }
+            unsafe { (&mut *(self.0 as *mut PriceData)).set_open(value); }
             self
         }
 
         #[inline(always)]
         fn set_high(&mut self, value: f64) -> &mut Self {
-            unsafe { (&mut *(self.base as *mut PriceData)).set_open(value); }
+            unsafe { (&mut *(self.0 as *mut PriceData)).set_open(value); }
             self
         }
 
         #[inline(always)]
         fn set_low(&mut self, value: f64) -> &mut Self {
-            unsafe { (&mut *(self.base as *mut PriceData)).set_low(value); }
+            unsafe { (&mut *(self.0 as *mut PriceData)).set_low(value); }
             self
         }
 
         #[inline(always)]
         fn set_close(&mut self, value: f64) -> &mut Self {
-            unsafe { (&mut *(self.base as *mut PriceData)).set_close(value); }
+            unsafe { (&mut *(self.0 as *mut PriceData)).set_close(value); }
             self
         }
     }
 
+    pub struct PriceUnsafe<R: Message>(*const u8, *const u8, PhantomData<R>);
 
-    pub struct PriceUnsafeProvider<'a, R: 'a + Message<'a>> {
-        base: *const PriceData,
-        bounds: *const u8,
-        _p: PhantomData<(&'a (), R)>,
-    }
-
-    impl<'a, R: 'a + Message<'a>> UnsafeProvider<'a> for PriceUnsafeProvider<'a, R> {
+    impl<R: Message> UnsafeProvider for PriceUnsafe<R> {
         fn new(base: *const u8, bounds: *const u8) -> Self {
-            Self { base: unsafe { base as *const PriceData }, bounds, _p: PhantomData }
+            Self(base, bounds, PhantomData)
         }
 
         fn base_ptr(&self) -> *const u8 {
-            unsafe { self.base as *const u8 }
+            unsafe { self.0 as *const u8 }
         }
     }
 
-    impl<'a, M: 'a + Message<'a>> Price<'a> for PriceUnsafeProvider<'a, M> {
-        #[inline(always)]
-        fn wap_hash(&self) -> u64 {
-            hash_default(unsafe { self.base as *const u8 },
-                         mem::size_of::<PriceData>() as u64)
-        }
-
-        #[inline(always)]
-        fn copy_to<'b>(&self, to: &mut impl Price<'b>) {
-            copy_price(self, to);
-        }
-
+    impl<M: Message> Price for PriceUnsafe<M> {
         #[inline(always)]
         fn open(&self) -> f64 {
             unsafe {
-                if self.bounds.offset(8) as usize > self.bounds as usize { 0f64 } else { (&*self.base).open() }
+                if self.0.offset(8) as usize > self.1 as usize { 0f64 } else { (&*(self.0 as *const PriceData)).open() }
             }
         }
 
         #[inline(always)]
         fn high(&self) -> f64 {
             unsafe {
-                if self.bounds.offset(16) as usize > self.bounds as usize { 0f64 } else { (&*self.base).close() }
+                if self.0.offset(16) as usize > self.1 as usize { 0f64 } else { (&*(self.0 as *const PriceData)).close() }
             }
         }
 
         #[inline(always)]
         fn low(&self) -> f64 {
             unsafe {
-                if self.bounds.offset(24) as usize > self.bounds as usize { 0f64 } else { (&*self.base).low() }
+                if self.0.offset(24) as usize > self.1 as usize { 0f64 } else { (&*(self.0 as *const PriceData)).low() }
             }
         }
 
         #[inline(always)]
         fn close(&self) -> f64 {
             unsafe {
-                if self.bounds.offset(32) as usize > self.bounds as usize { 0f64 } else { (&*self.base).close() }
+                if self.0.offset(32) as usize > self.1 as usize { 0f64 } else { (&*(self.0 as *const PriceData)).close() }
             }
         }
 
         #[inline(always)]
         fn set_open(&mut self, value: f64) -> &mut Self {
             unsafe {
-                if self.bounds.offset(8) as usize > self.bounds as usize { self } else {
-                    (&mut *(self.base as *mut PriceData)).set_open(value);
+                if self.0.offset(8) as usize > self.1 as usize { self } else {
+                    (&mut *(self.0 as *mut PriceData)).set_open(value);
                     self
                 }
             }
@@ -575,8 +618,8 @@ mod tests {
         #[inline(always)]
         fn set_high(&mut self, value: f64) -> &mut Self {
             unsafe {
-                if self.bounds.offset(16) as usize > self.bounds as usize { self } else {
-                    (&mut *(self.base as *mut PriceData)).set_high(value);
+                if self.0.offset(16) as usize > self.1 as usize { self } else {
+                    (&mut *(self.0 as *mut PriceData)).set_high(value);
                     self
                 }
             }
@@ -585,8 +628,8 @@ mod tests {
         #[inline(always)]
         fn set_low(&mut self, value: f64) -> &mut Self {
             unsafe {
-                if self.bounds.offset(24) as usize > self.bounds as usize { self } else {
-                    (&mut *(self.base as *mut PriceData)).set_low(value);
+                if self.0.offset(24) as usize > self.1 as usize { self } else {
+                    (&mut *(self.0 as *mut PriceData)).set_low(value);
                     self
                 }
             }
@@ -595,101 +638,113 @@ mod tests {
         #[inline(always)]
         fn set_close(&mut self, value: f64) -> &mut Self {
             unsafe {
-                if self.bounds.offset(32) as usize > self.bounds as usize { self } else {
-                    (&mut *(self.base as *mut PriceData)).set_close(value);
+                if self.0.offset(32) as usize > self.1 as usize { self } else {
+                    (&mut *(self.0 as *mut PriceData)).set_close(value);
                     self
                 }
             }
         }
     }
 
+    // pub struct PriceBuilderProvider<'a, M: Message, B: Builder> {
+    //     builder: &'a mut B,
+    //     offset: isize,
+    //     _p: PhantomData<(M)>,
+    // }
+    //
+    // impl<'a, R: Message, B: Builder> PriceBuilderProvider<R, B> {
+    //     fn new(base: *const u8, offset: isize, builder: &'a mut B) -> Self {
+    //         Self { builder, offset, _p: PhantomData }
+    //     }
+    //
+    //     fn deref(&self) -> &PriceData {
+    //         unsafe { &*((&*self.builder).offset(self.offset) as *const PriceData) }
+    //     }
+    //
+    //     fn deref_mut(&mut self) -> &mut PriceData {
+    //         unsafe { &mut *((&*self.builder).offset(self.offset) as *mut PriceData) }
+    //     }
+    // }
+    //
+    // impl<R: Message, B: Builder> Price for PriceBuilderProvider<R, B> {
+    //     #[inline(always)]
+    //     fn open(&self) -> f64 {
+    //         self.deref().open()
+    //     }
+    //
+    //     #[inline(always)]
+    //     fn high(&self) -> f64 {
+    //         self.deref().high()
+    //     }
+    //
+    //     #[inline(always)]
+    //     fn low(&self) -> f64 {
+    //         self.deref().low()
+    //     }
+    //
+    //     #[inline(always)]
+    //     fn close(&self) -> f64 {
+    //         self.deref().close()
+    //     }
+    //
+    //     #[inline(always)]
+    //     fn set_open(&mut self, value: f64) -> &mut Self {
+    //         self.deref_mut().set_open(value);
+    //         self
+    //     }
+    //
+    //     #[inline(always)]
+    //     fn set_high(&mut self, value: f64) -> &mut Self {
+    //         self.deref_mut().set_high(value);
+    //         self
+    //     }
+    //
+    //     #[inline(always)]
+    //     fn set_low(&mut self, value: f64) -> &mut Self {
+    //         self.deref_mut().set_low(value);
+    //         self
+    //     }
+    //
+    //     #[inline(always)]
+    //     fn set_close(&mut self, value: f64) -> &mut Self {
+    //         self.deref_mut().set_close(value);
+    //         self
+    //     }
+    // }
 
+    // impl<'a, R: Message, B: Builder> PriceMutable for PriceBuilderProvider<'a, R, B> {
+    //     #[inline(always)]
+    //     fn set_open(&mut self, value: f64) -> &mut Self {
+    //         self.deref_mut().set_open(value);
+    //         self
+    //     }
+    //
+    //     #[inline(always)]
+    //     fn set_high(&mut self, value: f64) -> &mut Self {
+    //         self.deref_mut().set_high(value);
+    //         self
+    //     }
+    //
+    //     #[inline(always)]
+    //     fn set_low(&mut self, value: f64) -> &mut Self {
+    //         self.deref_mut().set_low(value);
+    //         self
+    //     }
+    //
+    //     #[inline(always)]
+    //     fn set_close(&mut self, value: f64) -> &mut Self {
+    //         self.deref_mut().set_close(value);
+    //         self
+    //     }
+    // }
 
-    pub struct PriceBuilderProvider<'a, M: 'a + Message<'a>, B: Builder> {
-        builder: *const B,
-        offset: isize,
-        _p: PhantomData<(&'a (), M)>,
-    }
-
-    impl<'a, R: 'a + Message<'a>, B: Builder> PriceBuilderProvider<'a, R, B> {
-        fn new(base: *const u8, offset: isize, builder: *const B) -> Self {
-            Self { builder, offset, _p: PhantomData }
-        }
-
-        fn deref(&self) -> &PriceData {
-            unsafe { &*((&*self.builder).offset(self.offset) as *const PriceData) }
-        }
-
-        fn deref_mut(&mut self) -> &mut PriceData {
-            unsafe { &mut *((&*self.builder).offset(self.offset) as *mut PriceData) }
-        }
-    }
-
-    impl<'a, R: 'a + Message<'a>, B: Builder> Price<'a> for PriceBuilderProvider<'a, R, B> {
-        #[inline(always)]
-        fn wap_hash(&self) -> u64 {
-            hash_default(unsafe { self.builder.offset(self.offset) as *const u8 },
-                         mem::size_of::<PriceData>() as u64)
-        }
-
-        #[inline(always)]
-        fn copy_to<'b>(&self, to: &mut impl Price<'b>) {
-            copy_price(self, to);
-        }
-
-        #[inline(always)]
-        fn open(&self) -> f64 {
-            self.deref().open()
-        }
-
-        #[inline(always)]
-        fn high(&self) -> f64 {
-            self.deref().high()
-        }
-
-        #[inline(always)]
-        fn low(&self) -> f64 {
-            self.deref().low()
-        }
-
-        #[inline(always)]
-        fn close(&self) -> f64 {
-            self.deref().close()
-        }
-
-        #[inline(always)]
-        fn set_open(&mut self, value: f64) -> &mut Self {
-            self.deref_mut().set_open(value);
-            self
-        }
-
-        #[inline(always)]
-        fn set_high(&mut self, value: f64) -> &mut Self {
-            self.deref_mut().set_high(value);
-            self
-        }
-
-        #[inline(always)]
-        fn set_low(&mut self, value: f64) -> &mut Self {
-            self.deref_mut().set_low(value);
-            self
-        }
-
-        #[inline(always)]
-        fn set_close(&mut self, value: f64) -> &mut Self {
-            self.deref_mut().set_close(value);
-            self
-        }
-    }
-
-
-    #[inline(always)]
-    fn copy_price<'a, 'b>(from: &impl Price<'a>, to: &mut impl Price<'b>) {
-        to.set_open(from.open())
-            .set_high(from.high())
-            .set_low(from.low())
-            .set_close(from.close());
-    }
+    // #[inline(always)]
+    // fn copy_price<'a, 'b>(from: &impl Price, to: &mut impl Price) {
+    //     to.set_open(from.open())
+    //         .set_high(from.high())
+    //         .set_low(from.low())
+    //         .set_close(from.close());
+    // }
 
     #[derive(Copy, Clone, Debug)]
     #[repr(C, packed)]
@@ -706,18 +761,7 @@ mod tests {
         }
     }
 
-    impl<'a> Price<'a> for PriceData {
-        #[inline(always)]
-        fn wap_hash(&self) -> u64 {
-            hash_default(unsafe { self as *const Self as *const u8 },
-                         mem::size_of::<PriceData>() as u64)
-        }
-
-        #[inline(always)]
-        fn copy_to<'b>(&self, to: &mut impl Price<'b>) {
-            copy_price(self, to);
-        }
-
+    impl<'a> Price for PriceData {
         #[inline(always)]
         fn open(&self) -> f64 {
             f64::from_bits(f64::to_bits(self.open).to_le())
@@ -760,40 +804,59 @@ mod tests {
         }
     }
 
-
-    fn process_order2<'a>(order: &mut impl Order<'a>) {
-        order.set_id(100);
-        println!("order");
-    }
-
-    fn process_price<'a>(price: &mut impl Price<'a>) {
+    fn process_price(price: &mut impl Price) {
         price.set_open(4198.25);
         println!("open: {:}", price.open());
     }
 
+    fn build_order2(o: &mut impl Order) {
+        o.price_mut().close();
+        o.price_mut().set_close(113.34);
+    }
+
+    fn build_order() {
+        let mut o = OrderMessage::new().unwrap();
+
+        let mut order = o.base_mut();
+        build_order2(order.deref_mut());
+
+        let mut price = order.price_mut();
+        price.set_open(133.34);
+        price.set_low(11.33);
+        o.base_mut().price_mut().set_close(34.44);
+
+        let mut p = o.base().price();
+        p.open();
+    }
+
     #[test]
     fn root_message() {
+        build_order();
         let mut o = OrderMessage::new().unwrap();
         let mut ou = OrderMessage::new_unsafe().unwrap();
         println!("size: {:}", o.size());
         println!("capacity: {:}", o.capacity());
 
-        let (mut p, mut o) = o.price_mut();
-        p.set_high(11.0);
-        o.price().high();
+        // let (mut p, mut o) = o.price_mut();
+        // p.set_high(11.0);
+        // o.price().high();
+        // o.price_mut().0.set_open(10.0);
     }
 
     fn build() {
         let mut p = PriceMessage::new().unwrap();
-        p.base;
+        // let mut pp = PriceMessage::<Fixed16>::new_safe();
+        // pp.set_open(11.0);
+        // pp.base_ptr();
     }
 
-    fn return_price<'a>(o: &'a impl Order<'a>) -> impl Price<'a> {
-        o.price()
-    }
+    // fn return_price<'a>(o: &'a impl Order<'a>) -> impl Price {
+    //     o.price()
+    // }
 
     #[test]
     fn message() {
+        build();
         println!("done");
     }
 }
