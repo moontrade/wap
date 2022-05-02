@@ -7,7 +7,7 @@ mod hash;
 mod block;
 mod header;
 mod message;
-mod builder;
+mod appender;
 mod heap;
 mod vector;
 mod map;

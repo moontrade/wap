@@ -429,7 +429,7 @@ mod tests {
     }
 
     #[bench]
-    fn bench_add_two(b: &mut Bencher) {
+    fn bench_u64(b: &mut Bencher) {
         let mut rand = Rand::new(DEFAULT_SEED);
 
         // test::black_box(|| {
