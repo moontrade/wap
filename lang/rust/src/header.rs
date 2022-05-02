@@ -4,7 +4,7 @@ use std::mem;
 use crate::block;
 use crate::block::Block;
 
-pub trait Header {
+pub trait Header: Sized {
     type Block: Block;
     type Size;
 
@@ -21,6 +21,11 @@ pub trait Header {
     fn raw_size(p: *const u8) -> usize;
 
     fn raw_set_size(p: *const u8, size: usize);
+
+    fn init(p: *mut u8, size: usize, base_size: usize) -> *mut u8 {
+        (unsafe { (&mut *(p as *mut Self)) }).set_size(size).set_base_size(base_size);
+        p
+    }
 }
 
 pub struct Fixed<T: Sized> {

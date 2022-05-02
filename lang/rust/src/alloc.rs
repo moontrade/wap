@@ -20,9 +20,9 @@ impl Allocator for Global {
 
     fn deallocate(p: *mut u8, size: usize) {
         // unsafe { ptr::drop_in_place(p); }
-        unsafe { Box::from_raw(p); }
+        // unsafe { Box::from_raw(p); }
         // unsafe { std::alloc::Global.deallocate(NonNull::new(p), Layout::from_size_align_unchecked(size, 1)); }
-        // unsafe { dealloc(p, Layout::from_size_align_unchecked(size, 1)) }
+        unsafe { dealloc(p, Layout::from_size_align_unchecked(size, 1)) }
     }
 
     fn deallocate_layout(p: *mut u8, layout: Layout) {
