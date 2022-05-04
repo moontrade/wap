@@ -17,7 +17,7 @@ struct MyState {
     wasi: wasmtime_wasi::WasiCtx,
 }
 
-fn run2() -> anyhow::Result<()> {
+fn main3() -> anyhow::Result<()> {
     // An engine stores and configures global compilation settings like
     // optimization level, enabled wasm features, etc.
     let mut config = Config::new();
@@ -83,7 +83,7 @@ fn main() -> anyhow::Result<()> {
     // Create our `store_fn` context and then compile a module and create an
     // instance from the compiled module all in one go.
     let mut store: Store<()> = Store::default();
-    let module = Module::from_file(store.engine(), "examples/memory.wat")?;
+    let module = Module::from_file(store.engine(), "memory.wat")?;
     let instance = Instance::new(&mut store, &module, &[])?;
 
     // load_fn up our exports from the instance
@@ -175,7 +175,7 @@ mod tests {
         // We start off by creating a `Module` which represents a compiled form
         // of our input wasm module. In this case it'll be JIT-compiled after
         // we parse the text format.
-        let module = Module::from_file(&engine, "examples/wapc.wasm")?;
+        let module = Module::from_file(&engine, "wapc.wasm")?;
 
         let wasi = wasmtime_wasi::sync::WasiCtxBuilder::new().
             inherit_stdio().
@@ -231,7 +231,7 @@ mod tests {
 // Create our `store_fn` context and then compile a module and create an
         // instance from the compiled module all in one go.
         let mut store: Store<()> = Store::default();
-        let module = Module::from_file(store.engine(), "examples/memory.wat").unwrap();
+        let module = Module::from_file(store.engine(), "memory.wat").unwrap();
         let instance = Instance::new(&mut store, &module, &[]).unwrap();
 
         // load_fn up our exports from the instance

@@ -2,10 +2,12 @@
 
 extern crate wee_alloc;
 
+
 use std::alloc::{alloc, dealloc, GlobalAlloc, Layout};
 use std::future::Future;
 use futures::executor::block_on;
 
+mod lib;
 mod hash;
 
 // Use `wee_alloc` as the global allocator.

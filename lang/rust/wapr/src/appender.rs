@@ -7,10 +7,20 @@ use crate::message;
 use crate::alloc::{Allocator, Doubled, Global, Grow, TruncResult};
 use crate::block::Block;
 use crate::header::Header;
-use crate::message::{Builder, FlexMessage, Message};
+use crate::message::{Builder, Flex, Message};
+
+fn alloc_with_extra<M: Message, A: Allocator>(extra: usize) -> (*mut u8, *mut u8) {
+    let size = M::INITIAL_SIZE + extra;
+    let p = A::allocate(size);
+    if p == ptr::null_mut() {
+        (ptr::null_mut(), ptr::null_mut())
+    } else {
+        unsafe { (M::Header::init(p, M::INITIAL_SIZE, M::SIZE), p.offset(size as isize)) }
+    }
+}
 
 pub struct Appender<
-    M: FlexMessage,
+    M: Flex,
     G: Grow = Doubled,
     A: Allocator = Global
 > {
@@ -22,11 +32,11 @@ pub struct Appender<
 
 impl<M, G, A> Appender<M, G, A>
     where
-        M: FlexMessage,
+        M: Flex,
         G: Grow,
         A: Allocator {
     pub fn new(extra: usize) -> Option<Self> {
-        let (root, end) = M::alloc_with_extra::<A>(extra);
+        let (root, end) = alloc_with_extra::<M, A>(extra);
         if root == null_mut() {
             None
         } else {
@@ -41,7 +51,7 @@ impl<M, G, A> Appender<M, G, A>
 
 impl<M, G, A> Drop for Appender<M, G, A>
     where
-        M: FlexMessage,
+        M: Flex,
         G: Grow,
         A: Allocator {
     fn drop(&mut self) {
@@ -51,7 +61,7 @@ impl<M, G, A> Drop for Appender<M, G, A>
 
 impl<M, G, A> Builder for Appender<M, G, A>
     where
-        M: FlexMessage,
+        M: Flex,
         G: Grow,
         A: Allocator {
     type Message = M;
@@ -68,14 +78,6 @@ impl<M, G, A> Builder for Appender<M, G, A>
     #[inline(always)]
     fn end_ptr(&self) -> *mut u8 {
         self.end
-    }
-
-    #[inline(always)]
-    fn take(self) -> (*const u8, *const u8) {
-        let root = self.root_ptr();
-        let end = self.end;
-        mem::forget(self);
-        (root, end)
     }
 
     fn truncate(&mut self, by: usize) -> TruncResult {
@@ -141,7 +143,7 @@ impl<M, G, A> Builder for Appender<M, G, A>
 
     fn reallocate(&mut self, block: &mut Self::Block, size: usize) -> *mut Self::Block {
         if block.is_free() {
-            return ptr::null_mut();
+            return null_mut();
         }
         let current_size = self.size();
         let offset = Self::Block::offset(self.root_ptr(), block);

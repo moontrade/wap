@@ -31,28 +31,9 @@ pub trait Message {
     const INITIAL_SIZE: usize;
     const BASE_OFFSET: isize;
     const BASE_SIZE: isize;
-
-    fn alloc<A: Allocator>() -> *mut u8 {
-        let size = Self::INITIAL_SIZE;
-        let p = A::allocate(size);
-        if p == ptr::null_mut() {
-            return ptr::null_mut();
-        }
-        Self::Header::init(p, Self::INITIAL_SIZE, Self::SIZE)
-    }
-
-    fn alloc_with_extra<A: Allocator>(extra: usize) -> (*mut u8, *mut u8) {
-        let size = Self::INITIAL_SIZE + extra;
-        let p = A::allocate(size);
-        if p == ptr::null_mut() {
-            (ptr::null_mut(), ptr::null_mut())
-        } else {
-            (Self::Header::init(p, Self::INITIAL_SIZE, Self::SIZE), unsafe { p.offset(size as isize) })
-        }
-    }
 }
 
-pub trait FlexMessage: Message {}
+pub trait Flex: Message {}
 
 pub trait Box: Deref<Target=Self::Root> {
     type Header: Header;
@@ -203,7 +184,7 @@ impl<'a, B> Deref for Slice<'a, B> {
     }
 }
 
-pub struct SliceMut<'a, B>(B, PhantomData<(&'a ())>);
+pub struct SliceMut<'a, B>(B, PhantomData<(&'a mut ())>);
 
 impl<'a, B> Deref for SliceMut<'a, B> {
     type Target = B;
@@ -219,6 +200,15 @@ impl<'a, B> DerefMut for SliceMut<'a, B> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
+}
+
+fn alloc<M: Message, A: Allocator>() -> *mut u8 {
+    let size = M::INITIAL_SIZE;
+    let p = A::allocate(size);
+    if p == ptr::null_mut() {
+        return ptr::null_mut();
+    }
+    unsafe { M::Header::init(p, M::INITIAL_SIZE, M::SIZE) }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -248,7 +238,7 @@ impl<M: Message, A: Allocator> Clone for Safe<M, A> {
 
 impl<M: Message, A: Allocator> Safe<M, A> {
     pub fn new() -> Option<Self> {
-        let p = M::alloc::<A>();
+        let p = alloc::<M, A>();
         if p == ptr::null_mut() {
             None
         } else {
@@ -329,7 +319,7 @@ impl<M: Message, A: Allocator> Clone for SafeMut<M, A> {
 
 impl<M: Message, A: Allocator> SafeMut<M, A> {
     pub fn new() -> Option<Self> {
-        let p = M::alloc::<A>();
+        let p = alloc::<M, A>();
         if p == ptr::null_mut() {
             None
         } else {
@@ -577,6 +567,7 @@ mod tests {
         id: u64,
         price: PriceData,
         client_id: [u8; 10],
+        _pad: [u8; 6],
     }
 
     impl OrderData {
@@ -613,15 +604,16 @@ mod tests {
 
         const SIZE: usize = mem::size_of::<Self::Layout>();
         const INITIAL_SIZE: usize = H::SIZE as usize + Self::SIZE;
-        // const ZERO_OFFSET: isize = H::SIZE - H::Block::SIZE_BYTES;
         const BASE_OFFSET: isize = H::SIZE;
         const BASE_SIZE: isize = Self::SIZE as isize;
     }
 
-    impl<H: Header> FlexMessage for OrderMessage<H> {}
+    impl<H: Header> Flex for OrderMessage<H> {}
+
+    pub type OrderMsg = OrderMessage<Flex16>;
 
     impl OrderMessage<Flex16> {
-        pub fn new() -> Option<SafeMut<OrderMessage<Flex16>>> {
+        pub fn new() -> Option<SafeMut<OrderMsg>> {
             SafeMut::new()
         }
 
@@ -932,9 +924,9 @@ mod tests {
         }
     }
 
-    pub struct PriceSafe<R: Message>(*const PriceData, PhantomData<R>);
+    pub struct PriceSafe<M: Message>(*const PriceData, PhantomData<M>);
 
-    impl<R: Message> Root for PriceSafe<R> {
+    impl<M: Message> Root for PriceSafe<M> {
         fn new(base: *const u8) -> Self {
             Self(unsafe { base as *const PriceData }, PhantomData)
         }
@@ -944,7 +936,7 @@ mod tests {
         }
     }
 
-    impl<R: Message> Price for PriceSafe<R> {
+    impl<M: Message> Price for PriceSafe<M> {
         #[inline(always)]
         fn open(&self) -> f64 {
             unsafe { (&*self.0).open() }
@@ -1195,10 +1187,6 @@ mod tests {
 
         let mut p2 = PriceMessage::new();
         PriceMessage::copy(&p, &mut p2);
-
-        // let mut pp = PriceMessage::<Fixed16>::new_safe();
-        // pp.set_open(11.0);
-        // pp.base_ptr();
     }
 
     // fn return_price<'a>(o: &'a impl Order<'a>) -> impl Price {
@@ -1209,5 +1197,24 @@ mod tests {
     fn message() {
         build();
         println!("done");
+
+        // #[repr(C)]
+        union Union {
+            x: u64,
+            y: u64,
+            z: [u8;9],
+        }
+
+        struct Struct {
+            u: Union,
+        }
+
+        impl Union {
+            pub fn x(&self) -> u64 {
+                unsafe { self.x }
+            }
+        }
+
+        println!("{:}", mem::size_of::<Union>())
     }
 }
