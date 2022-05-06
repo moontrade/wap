@@ -3,7 +3,7 @@
 #![feature(type_alias_impl_trait)]
 
 mod alloc;
-mod hash;
+pub mod hash;
 mod block;
 mod header;
 mod message;

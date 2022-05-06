@@ -1,14 +1,20 @@
 #![feature(test)]
 
 extern crate wee_alloc;
+extern crate wapr;
 
+// mod parser;
+// mod model;
+// mod linker;
+// mod go;
+// mod rust;
 
 use std::alloc::{alloc, dealloc, GlobalAlloc, Layout};
 use std::future::Future;
+use wapr::hash;
 use futures::executor::block_on;
 
-mod lib;
-mod hash;
+
 
 // Use `wee_alloc` as the global allocator.
 #[global_allocator]
