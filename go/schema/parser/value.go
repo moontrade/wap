@@ -44,7 +44,7 @@ type ObjectProperty struct {
 
 type NumberValue struct {
 	*Number
-	value [8]byte
+	value [16]byte
 }
 
 func (nv *NumberValue) Size() int {
@@ -57,6 +57,8 @@ func (nv *NumberValue) Size() int {
 		return 4
 	case TypeCodeI64, TypeCodeU64, TypeCodeF64:
 		return 8
+	case TypeCodeI128, TypeCodeU128:
+		return 16
 	}
 	return 0
 }

@@ -1,20 +1,26 @@
-//go:build !tinygo && !wasm && !wasi && !tinygo.wasm && cgo
+//go:build tinygo && !tiny.wasm && (darwin || (linux && !baremetal && !wasi) || (freebsd && !baremetal)) && !nintendoswitch
+// +build tinygo
+// +build !tiny.wasm
+// +build darwin linux,!baremetal,!wasi freebsd,!baremetal
+// +build !nintendoswitch
 
 package memory
 
 import (
-	"github.com/moontrade/wap/memory/rpmalloc"
+	"github.com/moontrade/wap/go/alloc/rpmalloc"
 )
+
+////////////////////////////////////////////////////////////////////////////////////
+// Global allocator convenience
+////////////////////////////////////////////////////////////////////////////////////
 
 func Init() {}
 
 // Alloc calls Alloc on the system allocator
-//export alloc
 func Alloc(size uintptr) Pointer {
 	return Pointer(rpmalloc.Malloc(size))
 }
 
-//export allocCap
 func AllocCap(size uintptr) (Pointer, uintptr) {
 	p, c := rpmalloc.MallocCap(size)
 	return Pointer(p), c
@@ -44,7 +50,6 @@ func Realloc(p Pointer, size uintptr) Pointer {
 	return Pointer(rpmalloc.Realloc(uintptr(p), size))
 }
 
-//export reallocCap
 func ReallocCap(p Pointer, size uintptr) (Pointer, uintptr) {
 	newPtr, c := rpmalloc.ReallocCap(uintptr(p), size)
 	return Pointer(newPtr), c
@@ -58,3 +63,13 @@ func Free(p Pointer) {
 func Sizeof(ptr Pointer) uintptr {
 	return rpmalloc.UsableSize(uintptr(ptr))
 }
+
+//// Scope creates an AutoFree free list that automatically reclaims memory
+//// after callback finishes.
+//func (a *Heap) Scope(fn func(a AutoFree)) {
+//	auto := NewAuto(a.AsAllocator(), 32)
+//	fn(auto)
+//	auto.Free()
+//}
+
+func initAllocator(heapStart, heapEnd uintptr) {}

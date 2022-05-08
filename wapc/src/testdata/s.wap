@@ -32,9 +32,8 @@ Another line
 
 namespace wap::model // some comment
 
-import "other.wap"
-
-max_message_size = 64kb
+/*
+import other "other.wap"
 
 type str_float_map map<string8, f64>
 using str_float_map = map<string8, f64>
@@ -43,6 +42,7 @@ const MAP str_float_map = [
     "hi": "bye",
     "bye", "hi"
 ]
+*/
 
 struct Price {
     open f64; high ?f64, low f64;

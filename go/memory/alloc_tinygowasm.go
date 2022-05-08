@@ -4,7 +4,7 @@
 package memory
 
 import (
-	"github.com/moontrade/wap/memory/tlsf"
+	"github.com/moontrade/wap/go/memory/tlsf"
 	"unsafe"
 )
 
@@ -23,7 +23,7 @@ func HeapInstance() *tlsf.Heap {
 ////////////////////////////////////////////////////////////////////////////////////
 
 // Alloc calls Alloc on the system allocator
-//export malloc
+//export walloc
 func Alloc(size uintptr) Pointer {
 	return Pointer(allocator.Alloc(size))
 }
@@ -40,7 +40,7 @@ func AllocZeroedCap(size uintptr) (Pointer, uintptr) {
 }
 
 // Alloc calls Alloc on the system allocator
-//export calloc
+//export wcalloc
 func Calloc(num, size uintptr) Pointer {
 	return Pointer(allocator.AllocZeroed(num * size))
 }
@@ -50,7 +50,7 @@ func CallocCap(num, size uintptr) (Pointer, uintptr) {
 }
 
 // Realloc calls Realloc on the system allocator
-//export realloc
+//export wrealloc
 func Realloc(p Pointer, size uintptr) Pointer {
 	return Pointer(allocator.Realloc(uintptr(p), size))
 }
@@ -60,7 +60,7 @@ func ReallocCap(p Pointer, size uintptr) (Pointer, uintptr) {
 }
 
 // Free calls Free on the system allocator
-//export free
+//export wfree
 func Free(p Pointer) {
 	allocator.Free(uintptr(p))
 }
@@ -70,11 +70,11 @@ func Sizeof(p Pointer) uintptr {
 	return uintptr(tlsf.SizeOf(uintptr(p)))
 }
 
-func Scope(fn func(a AutoFree)) {
-	a := NewAuto(32)
-	defer a.Free()
-	fn(a)
-}
+//func Scope(fn func(a AutoFree)) {
+//	a := NewAuto(32)
+//	defer a.Free()
+//	fn(a)
+//}
 
 //// Scope creates an AutoFree free list that automatically reclaims memory
 //// after callback finishes.
@@ -133,13 +133,17 @@ func initAllocator(heapStart, heapEnd uintptr) {
 		pagesAfter  = pagesBefore
 	)
 
-	// Need to add a page initially to fit minimum size required by allocator?
-	if heapStart == 0 || heapStart+unsafe.Sizeof(tlsf.Heap{})+tlsf.RootSize+tlsf.ALMask+16 >
-		uintptr(pagesBefore)*uintptr(wasmPageSize) {
-		// Just need a single page. Root size is much smaller than a single WASM page.
-		wasm_memory_grow(0, 1)
-		pagesAfter = wasm_memory_size(0)
-	}
+	println("wasm_memory_grow", wasm_memory_size(0))
+	wasm_memory_grow(0, 1)
+	pagesAfter = wasm_memory_size(0)
+
+	//// Need to add a page initially to fit minimum size required by allocator?
+	//if heapStart == 0 || heapStart+unsafe.Sizeof(tlsf.Heap{})+tlsf.RootSize+tlsf.ALMask+16 >
+	//	uintptr(pagesBefore)*uintptr(wasmPageSize) {
+	//	// Just need a single page. Root size is much smaller than a single WASM page.
+	//	wasm_memory_grow(0, 1)
+	//	pagesAfter = wasm_memory_size(0)
+	//}
 
 	// Bootstrap allocator which will take over all allocations from now on.
 	allocator = tlsf.Bootstrap(

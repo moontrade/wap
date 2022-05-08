@@ -19,39 +19,40 @@ type CommentLine struct {
 type TypeCode byte
 
 const (
-	TypeCodeUnknown    TypeCode = 0
-	TypeCodeBool       TypeCode = 1
-	TypeCodeI8         TypeCode = 2
-	TypeCodeU8         TypeCode = 3
-	TypeCodeI16        TypeCode = 4
-	TypeCodeU16        TypeCode = 5
-	TypeCodeI32        TypeCode = 6
-	TypeCodeU32        TypeCode = 7
-	TypeCodeI64        TypeCode = 8
-	TypeCodeU64        TypeCode = 9
-	TypeCodeI128       TypeCode = 10
-	TypeCodeU128       TypeCode = 11
-	TypeCodeF32        TypeCode = 12
-	TypeCodeF64        TypeCode = 13
-	TypeCodeF128       TypeCode = 14
-	TypeString         TypeCode = 20
-	TypeStringInline   TypeCode = 21
-	TypeCodeEnum       TypeCode = 25
-	TypeCodeStruct     TypeCode = 30
-	TypeCodeUnion      TypeCode = 31
-	TypeCodeVariant    TypeCode = 32
-	TypeCodeOptional   TypeCode = 33
-	TypeCodePointer    TypeCode = 33
-	TypeCodeArray      TypeCode = 40
-	TypeCodeVector     TypeCode = 41
-	TypeCodeMap        TypeCode = 50 // robin-hood map
-	TypeCodeMapOrdered TypeCode = 51 // ART radix tree
-	TypeCodeMapTree    TypeCode = 52 // B+Tree
-	TypeCodeSet        TypeCode = 60
-	TypeCodeSetOrdered TypeCode = 61
-	TypeCodeSetTree    TypeCode = 62
-	TypeCodeConst      TypeCode = 90
-	TypeCodePad        TypeCode = 100
+	TypeCodeUnknown      TypeCode = 0
+	TypeCodeBool         TypeCode = 1
+	TypeCodeI8           TypeCode = 2
+	TypeCodeU8           TypeCode = 3
+	TypeCodeI16          TypeCode = 4
+	TypeCodeU16          TypeCode = 5
+	TypeCodeI32          TypeCode = 6
+	TypeCodeU32          TypeCode = 7
+	TypeCodeI64          TypeCode = 8
+	TypeCodeU64          TypeCode = 9
+	TypeCodeI128         TypeCode = 10
+	TypeCodeU128         TypeCode = 11
+	TypeCodeF32          TypeCode = 12
+	TypeCodeF64          TypeCode = 13
+	TypeCodeF128         TypeCode = 14
+	TypeString           TypeCode = 20 // heap allocated string
+	TypeStringInline     TypeCode = 21 // string embedded inline
+	TypeStringInlinePlus TypeCode = 22 // string embedded inline with a heap allocated spill-over
+	TypeCodeEnum         TypeCode = 25
+	TypeCodeStruct       TypeCode = 30
+	TypeCodeUnion        TypeCode = 31
+	TypeCodeVariant      TypeCode = 32
+	TypeCodeOptional     TypeCode = 33
+	TypeCodePointer      TypeCode = 34
+	TypeCodeArray        TypeCode = 40
+	TypeCodeVector       TypeCode = 41
+	TypeCodeMap          TypeCode = 50 // robin-hood map
+	TypeCodeMapOrdered   TypeCode = 51 // ART radix tree
+	TypeCodeMapTree      TypeCode = 52 // B+Tree
+	TypeCodeSet          TypeCode = 60
+	TypeCodeSetOrdered   TypeCode = 61
+	TypeCodeSetTree      TypeCode = 62
+	TypeCodeConst        TypeCode = 90
+	TypeCodePad          TypeCode = 100
 )
 
 type Endian byte
@@ -141,38 +142,40 @@ func (n *Number) ToValueSigned(v int64) *NumberValue {
 }
 
 var (
-	Bool = Type{Name: "bool", Code: TypeCodeBool, Number: &Number{Code: TypeCodeBool}}
-	I8   = Type{Name: "i8", Code: TypeCodeI8, Number: &Number{Code: TypeCodeI8}}
-	I16  = Type{Name: "i16", Code: TypeCodeI16, Number: &Number{TypeCodeI16, EndianLittle}}
-	I16B = Type{Name: "i16b", Code: TypeCodeI16, Number: &Number{TypeCodeI16, EndianBig}}
-	I16N = Type{Name: "i16n", Code: TypeCodeI16, Number: &Number{TypeCodeI16, EndianNative}}
-	I32  = Type{Name: "i32", Code: TypeCodeI32, Number: &Number{TypeCodeI32, EndianLittle}}
-	I32B = Type{Name: "i32b", Code: TypeCodeI32, Number: &Number{TypeCodeI32, EndianBig}}
-	I32N = Type{Name: "i32n", Code: TypeCodeI32, Number: &Number{TypeCodeI32, EndianNative}}
-	I64  = Type{Name: "i64", Code: TypeCodeI64, Number: &Number{TypeCodeI64, EndianLittle}}
-	I64B = Type{Name: "i64b", Code: TypeCodeI64, Number: &Number{TypeCodeI64, EndianBig}}
-	I64N = Type{Name: "i64n", Code: TypeCodeI64, Number: &Number{TypeCodeI64, EndianNative}}
-	U8   = Type{Name: "u8", Code: TypeCodeU8, Number: &Number{Code: TypeCodeU8}}
-	U16  = Type{Name: "u16", Code: TypeCodeU16, Number: &Number{TypeCodeU16, EndianLittle}}
-	U16B = Type{Name: "u16b", Code: TypeCodeU16, Number: &Number{TypeCodeU16, EndianBig}}
-	U16N = Type{Name: "u16n", Code: TypeCodeU16, Number: &Number{TypeCodeU16, EndianNative}}
-	U32  = Type{Name: "u32", Code: TypeCodeU32, Number: &Number{TypeCodeU32, EndianLittle}}
-	U32B = Type{Name: "u32b", Code: TypeCodeU32, Number: &Number{TypeCodeU32, EndianBig}}
-	U32N = Type{Name: "u32n", Code: TypeCodeU32, Number: &Number{TypeCodeU32, EndianNative}}
-	U64  = Type{Name: "u64", Code: TypeCodeU64, Number: &Number{TypeCodeU64, EndianLittle}}
-	U64B = Type{Name: "u64b", Code: TypeCodeU64, Number: &Number{TypeCodeU64, EndianBig}}
-	U64N = Type{Name: "u64n", Code: TypeCodeU64, Number: &Number{TypeCodeU64, EndianNative}}
-	F32  = Type{Name: "f32", Code: TypeCodeF32, Number: &Number{TypeCodeF64, EndianLittle}}
-	F32B = Type{Name: "f32b", Code: TypeCodeF32, Number: &Number{TypeCodeF64, EndianBig}}
-	F32N = Type{Name: "f32n", Code: TypeCodeF32, Number: &Number{TypeCodeF64, EndianNative}}
-	F64  = Type{Name: "f64", Code: TypeCodeF64, Number: &Number{TypeCodeF64, EndianLittle}}
-	F64B = Type{Name: "f64b", Code: TypeCodeF64, Number: &Number{TypeCodeF64, EndianBig}}
-	F64N = Type{Name: "f64n", Code: TypeCodeF64, Number: &Number{TypeCodeF64, EndianNative}}
+	Bool  = Type{Name: "bool", Code: TypeCodeBool, Number: &Number{Code: TypeCodeBool}}
+	I8    = Type{Name: "i8", Code: TypeCodeI8, Number: &Number{Code: TypeCodeI8}}
+	I16   = Type{Name: "i16", Code: TypeCodeI16, Number: &Number{TypeCodeI16, EndianLittle}}
+	I16B  = Type{Name: "i16b", Code: TypeCodeI16, Number: &Number{TypeCodeI16, EndianBig}}
+	I16N  = Type{Name: "i16n", Code: TypeCodeI16, Number: &Number{TypeCodeI16, EndianNative}}
+	I32   = Type{Name: "i32", Code: TypeCodeI32, Number: &Number{TypeCodeI32, EndianLittle}}
+	I32B  = Type{Name: "i32b", Code: TypeCodeI32, Number: &Number{TypeCodeI32, EndianBig}}
+	I32N  = Type{Name: "i32n", Code: TypeCodeI32, Number: &Number{TypeCodeI32, EndianNative}}
+	I64   = Type{Name: "i64", Code: TypeCodeI64, Number: &Number{TypeCodeI64, EndianLittle}}
+	I64B  = Type{Name: "i64b", Code: TypeCodeI64, Number: &Number{TypeCodeI64, EndianBig}}
+	I64N  = Type{Name: "i64n", Code: TypeCodeI64, Number: &Number{TypeCodeI64, EndianNative}}
+	I128  = Type{Name: "i128", Code: TypeCodeI128, Number: &Number{TypeCodeI128, EndianLittle}}
+	I128B = Type{Name: "i128b", Code: TypeCodeI128, Number: &Number{TypeCodeI128, EndianBig}}
+	I128N = Type{Name: "i128n", Code: TypeCodeI128, Number: &Number{TypeCodeI128, EndianNative}}
+	U8    = Type{Name: "u8", Code: TypeCodeU8, Number: &Number{Code: TypeCodeU8}}
+	U16   = Type{Name: "u16", Code: TypeCodeU16, Number: &Number{TypeCodeU16, EndianLittle}}
+	U16B  = Type{Name: "u16b", Code: TypeCodeU16, Number: &Number{TypeCodeU16, EndianBig}}
+	U16N  = Type{Name: "u16n", Code: TypeCodeU16, Number: &Number{TypeCodeU16, EndianNative}}
+	U32   = Type{Name: "u32", Code: TypeCodeU32, Number: &Number{TypeCodeU32, EndianLittle}}
+	U32B  = Type{Name: "u32b", Code: TypeCodeU32, Number: &Number{TypeCodeU32, EndianBig}}
+	U32N  = Type{Name: "u32n", Code: TypeCodeU32, Number: &Number{TypeCodeU32, EndianNative}}
+	U64   = Type{Name: "u64", Code: TypeCodeU64, Number: &Number{TypeCodeU64, EndianLittle}}
+	U64B  = Type{Name: "u64b", Code: TypeCodeU64, Number: &Number{TypeCodeU64, EndianBig}}
+	U64N  = Type{Name: "u64n", Code: TypeCodeU64, Number: &Number{TypeCodeU64, EndianNative}}
+	U128  = Type{Name: "u128", Code: TypeCodeU128, Number: &Number{TypeCodeU128, EndianLittle}}
+	U128B = Type{Name: "u128b", Code: TypeCodeU128, Number: &Number{TypeCodeU128, EndianBig}}
+	U128N = Type{Name: "u128n", Code: TypeCodeU128, Number: &Number{TypeCodeU128, EndianNative}}
+	F32   = Type{Name: "f32", Code: TypeCodeF32, Number: &Number{TypeCodeF64, EndianLittle}}
+	F32B  = Type{Name: "f32b", Code: TypeCodeF32, Number: &Number{TypeCodeF64, EndianBig}}
+	F32N  = Type{Name: "f32n", Code: TypeCodeF32, Number: &Number{TypeCodeF64, EndianNative}}
+	F64   = Type{Name: "f64", Code: TypeCodeF64, Number: &Number{TypeCodeF64, EndianLittle}}
+	F64B  = Type{Name: "f64b", Code: TypeCodeF64, Number: &Number{TypeCodeF64, EndianBig}}
+	F64N  = Type{Name: "f64n", Code: TypeCodeF64, Number: &Number{TypeCodeF64, EndianNative}}
 )
-
-/*
-
- */
 
 func (nv *NumberValue) Get() uint64 {
 	switch nv.Number.Code {
@@ -200,6 +203,17 @@ func (nv *NumberValue) Get() uint64 {
 	return 0
 }
 
+func (nv *NumberValue) Get128() {
+	// TODO: implement Get128
+	if nv.Number.Endian == EndianBig {
+		if IsLittleEndian {
+
+		} else {
+
+		}
+	}
+}
+
 func (nv *NumberValue) Append(b []byte) []byte {
 	switch nv.Number.Code {
 	case TypeCodeBool, TypeCodeI8, TypeCodeU8:
@@ -210,6 +224,8 @@ func (nv *NumberValue) Append(b []byte) []byte {
 		b = append(b, nv.value[0:4]...)
 	case TypeCodeI64, TypeCodeU64, TypeCodeF64:
 		b = append(b, nv.value[0:8]...)
+	case TypeCodeI128, TypeCodeU128:
+		b = append(b, nv.value[0:16]...)
 	}
 	return b
 }
@@ -236,7 +252,22 @@ func (nv *NumberValue) Set(value uint64) {
 		} else {
 			binary.LittleEndian.PutUint64(nv.value[0:8], value)
 		}
+	case TypeCodeI128, TypeCodeU128:
+		// TODO: add 128bit value support
+		if nv.Number.Endian == EndianBig {
+			if IsLittleEndian {
+
+			} else {
+
+			}
+		} else {
+
+		}
 	}
+}
+
+func (nv *NumberValue) Set128(value [16]byte) {
+	// TODO: implement
 }
 
 // Type variant
@@ -356,7 +387,6 @@ type Struct struct {
 	Pack   int
 	Size   int
 	Inner  []*Type
-	Union  bool
 }
 
 func NewStruct(name string, line Line, comments []*Comment) *Struct {
@@ -368,11 +398,14 @@ func NewStruct(name string, line Line, comments []*Comment) *Struct {
 	return s
 }
 
+func (s *Struct) IsUnion() bool {
+	return s.Type.Code == TypeCodeUnion
+}
+
 func (f *Field) AsUnion() *Struct {
 	s := &Struct{Type: &Type{}}
 	s.Type.Struct = s
 	s.Type.Code = TypeCodeUnion
-	s.Union = true
 	s.Inline = f
 	return s
 }

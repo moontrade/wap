@@ -1,7 +1,7 @@
 package memory
 
 import (
-	"github.com/moontrade/wap/memory/hash"
+	"github.com/moontrade/wap/go/memory/hash"
 	"unsafe"
 )
 
@@ -637,51 +637,10 @@ func (p Pointer) SetUint56BE(offset int, v uint64) {
 	*(*byte)(unsafe.Add(p.Unsafe(), offset+6)) = byte(v)
 }
 
-func (p Pointer) Hash32(length int) uint32 {
-	return p.Hash32At(0, length)
-}
-
-//goland:noinspection ALL
-func (p Pointer) Hash32At(offset, length int) uint32 {
-	const (
-		offset32 = uint32(2166136261)
-		prime32  = uint32(16777619)
-	)
-	hash := offset32
-
-	start := uintptr(int(p) + offset)
-	end := start + uintptr(length)
-	for ; start < end; start++ {
-		hash ^= uint32(*(*byte)(unsafe.Pointer(start)))
-		hash *= prime32
-	}
-	return hash
-}
-
 func (p Pointer) Hash64(length int) uint64 {
-	return p.Hash64At(0, length)
+	return hash.Hash(p.Unsafe(), uint64(length), hash.DefaultSeed)
 }
 
-//goland:noinspection ALL
 func (p Pointer) Hash64At(offset, length int) uint64 {
-	const (
-		offset64 = uint64(14695981039346656037)
-		prime64  = uint64(1099511628211)
-	)
-	hash := offset64
-	start := uintptr(int(p) + offset)
-	end := start + uintptr(length)
-	for ; start < end; start++ {
-		hash ^= uint64(*(*byte)(unsafe.Pointer(start)))
-		hash *= prime64
-	}
-	return hash
-}
-
-func (p Pointer) WyHash64(seed uint64, offset, length int) uint64 {
-	return hash.WyHash(p.Bytes(offset, length, length), seed)
-}
-
-func (p Pointer) Metro64(seed uint64, offset, length int) uint64 {
-	return hash.Metro(p.Bytes(offset, length, length), seed)
+	return hash.Hash(p.Pointer(offset).Unsafe(), uint64(length), hash.DefaultSeed)
 }

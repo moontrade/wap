@@ -8,14 +8,25 @@ use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::num::ParseIntError;
 use std::ops::{Deref, DerefMut};
+use std::ptr::null_mut;
 use std::str::{CharIndices, FromStr};
 
 use crate::model::{Const, Enum, KindData, Mut, Struct, Type, Union, Variant};
 
 use super::model::{Comments, Module, Position};
 
+pub enum ParseError {
+    InvalidCharacter { token: TokenSpan, character: char },
+    UnexpectedEOF { token: TokenSpan },
+    Expected { found: TokenPosition, expected: Token },
+    ExpectedOneOf { found: TokenPosition, one_of: Vec<Token> },
+    InvalidFieldNumber { reason: &'static str, float: Option<f64>, int: Option<i128> },
+    BadNumeral { token: TokenSpan, reason: String },
+    CannotNest { parent: &'static str, child: &'static str },
+}
+
 pub struct Parser<'a> {
-    module: Box<Module<'a>>,
+    module: Mut<'a, Module<'a>>,
     contents: &'a String,
     iter: Peekable<CharIndices<'a>>,
     mark: Position,
@@ -36,15 +47,6 @@ pub enum Numeral<'a> {
     UInt { text: &'a str, value: u128 },
 }
 
-pub enum ParseError {
-    InvalidCharacter { token: TokenSpan, character: char },
-    UnexpectedEOF { token: TokenSpan },
-    Expected { found: TokenPosition, expected: Token },
-    ExpectedOneOf { found: TokenPosition, one_of: Vec<Token> },
-    InvalidFieldNumber { reason: &'static str, float: Option<f64>, int: Option<i128> },
-    BadNumeral { token: TokenSpan, reason: String },
-}
-
 impl ParseError {
     fn fmt0(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
@@ -53,7 +55,8 @@ impl ParseError {
             ParseError::Expected { .. } => Ok(()),
             ParseError::BadNumeral { .. } => Ok(()),
             ParseError::ExpectedOneOf { .. } => Ok(()),
-            ParseError::InvalidFieldNumber { .. } => Ok(())
+            ParseError::InvalidFieldNumber { .. } => Ok(()),
+            ParseError::CannotNest { .. } => Ok(())
         }
     }
 }
@@ -208,9 +211,10 @@ pub fn parse(contents: &String) -> anyhow::Result<Box<Module>> {
 }
 
 impl<'a> Parser<'a> {
-    fn parse(contents: &'a String) -> anyhow::Result<Box<Module<'_>>> {
+    fn parse(contents: &'a String) -> anyhow::Result<Box<Module<'a>>> {
+        let mut module = Module::new();
         let mut p = Self {
-            module: Module::new(),
+            module: Mut::new(module.deref_mut()),
             contents,
             iter: contents.char_indices().peekable(),
             mark: Position::new(0, 0, 0),
@@ -224,10 +228,8 @@ impl<'a> Parser<'a> {
             comments: Comments::new(),
             numeral: None,
         };
-        match p.run() {
-            Ok(_) => Ok(p.module),
-            Err(r) => Err(r)
-        }
+        p.run()?;
+        Ok(module)
     }
 
     #[inline(always)]
@@ -305,9 +307,20 @@ impl<'a> Parser<'a> {
                         }
                         None => self.set_token(Token::ForwardSlash)
                     }
-
                     '|' => self.set_token(Token::Or),
-
+                    ':' => match self.peek() {
+                        Some(ch) => match ch {
+                            ':' => {
+                                self.expect_next_char()?;
+                                self.set_token(Token::ColonColon)
+                            }
+                            _ => {
+                                self.set_token(Token::Colon)
+                            }
+                        }
+                        None => self.set_token(Token::Colon)
+                    },
+                    '+' => self.set_token(Token::Plus),
                     '-' => match self.peek() {
                         Some(ch) => match ch {
                             '.' | '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
@@ -319,7 +332,6 @@ impl<'a> Parser<'a> {
                         }
                         None => self.set_token(Token::Minus)
                     },
-
                     '.' => match self.peek() {
                         Some(ch) => match ch {
                             '.' => {
@@ -336,10 +348,8 @@ impl<'a> Parser<'a> {
                         }
                         None => self.set_token(Token::Period)
                     },
-
                     '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' =>
                         self.parse_numeral(),
-
                     'a' | 'A' | 'b' | 'B' | 'c' | 'C' | 'd' | 'D' | 'e' | 'E' | 'f' |
                     'F' | 'g' | 'G' | 'h' | 'H' | 'i' | 'I' | 'j' | 'J' | 'k' | 'K' |
                     'l' | 'L' | 'm' | 'M' | 'n' | 'N' | 'o' | 'O' | 'p' | 'P' | 'q' |
@@ -372,7 +382,7 @@ impl<'a> Parser<'a> {
                     ' ' | '\t' | '\r' => {
                         self.expect_next_char()?;
                     }
-                    _ => return self.next()
+                    _ => return Ok(())
                 }
                 None => return Ok(())
             }
@@ -394,7 +404,7 @@ impl<'a> Parser<'a> {
             self.pos)
     }
 
-    fn word(&mut self) -> &'a str {
+    fn word(&self) -> &'a str {
         self.contents[self.mark.index..=self.pos.index].trim()
     }
 
@@ -460,14 +470,10 @@ impl<'a> Parser<'a> {
                         'F' | 'g' | 'G' | 'h' | 'H' | 'i' | 'I' | 'j' | 'J' | 'k' | 'K' |
                         'l' | 'L' | 'm' | 'M' | 'n' | 'N' | 'o' | 'O' | 'p' | 'P' | 'q' |
                         'r' | 'R' | 's' | 'S' | 't' | 'T' | 'u' | 'U' | 'v' | 'V' | 'w' |
-                        'W' | 'x' | 'X' | 'y' | 'Y' | 'z' | 'Z' | '_' => {}
-
-                        ':' | ',' | '|' => {}
-                        ' ' | '\t' => {}
-
-                        '>' => {}
-
-                        _ => {}
+                        'W' | 'x' | 'X' | 'y' | 'Y' | 'z' | 'Z' | '_' => {
+                            self.expect_next_char()?;
+                        }
+                        _ => return Ok(())
                     }
                 }
             }
@@ -617,28 +623,18 @@ impl<'a> Parser<'a> {
                 }
                 Token::Word => {
                     match self.word() {
-                        "mod" | "module" => self.parse_mod()?,
+                        "mod" | "module" | "namespace" => self.parse_mod()?,
                         "import" => {}
                         "type" | "using" => self.parse_alias()?,
                         "const" => self.parse_const()?,
                         "enum" => self.parse_enum()?,
 
-                        "struct" =>
-                            Mut::new(self).module.new_struct(|s| {
-                                self.expect_next_token(Token::Word)?;
-                                s.set_name(self.word().to_owned());
-                                self.visit_struct(s)
-                            })?,
-
-                        "variant" => self.parse_variant()?,
-
-                        "union" => {
-                            Mut::new(self).module.new_union(|u| {
-                                self.expect_next_token(Token::Word)?;
-                                u.set_name(self.word().to_owned());
-                                self.visit_union(u)
-                            })?
-                        },
+                        "struct" => {
+                            self.expect_next_token(Token::Word)?;
+                            let s = self.module_mut(|m| m.new_struct());
+                            s.set_name(self.word().to_owned());
+                            self.visit_struct(s)?;
+                        }
                         _ => {}
                     }
                 }
@@ -655,7 +651,46 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_mod(&mut self) -> anyhow::Result<()> {
-        Ok(())
+        self.expect_next()?;
+        let start = self.pos;
+        let mut prev = self.token;
+        let mut end = start;
+        loop {
+            match self.token {
+                Token::Word => {
+                    prev = Token::Word;
+                    end = self.pos;
+                    end.index += self.word().len();
+                }
+                Token::ColonColon => {
+                    if prev != Token::Word {
+                        return self.err_expected_token(Token::Word);
+                    }
+                    prev = Token::ColonColon;
+                }
+                Token::NewLine | Token::Comment | Token::CommentMulti | Token::EOF => {
+                    // done
+                    if prev == Token::ColonColon {
+                        return self.err_expected_token(Token::Word);
+                    }
+                    self.module_mut(|m| {
+                        m.full = self.contents[start.index..end.index].trim().to_owned();
+                    });
+
+                    match self.token {
+                        Token::NewLine | Token::EOF => return Ok(()),
+                        Token::Comment => return self.parse_comment(),
+                        Token::CommentMulti => return self.parse_comment_multiline(),
+                        _ => unreachable!()
+                    }
+                }
+                _ => return self.err_expected_token_one_of(vec![
+                    Token::Word,
+                    Token::ColonColon,
+                ])
+            }
+            self.next()?;
+        }
     }
 
     fn parse_alias(&mut self) -> anyhow::Result<()> {
@@ -663,6 +698,10 @@ impl<'a> Parser<'a> {
         let name = self.word();
 
 
+        Ok(())
+    }
+
+    fn parse_struct(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -682,12 +721,8 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn module(&mut self) -> &mut Module<'a> {
-        &mut self.module
-    }
-
-    fn parse_struct(&mut self) -> anyhow::Result<()> {
-        Mut::new(self).module.new_struct(|s| self.visit_struct(s))
+    fn module_mut<R>(&mut self, f: impl FnOnce(&'a mut Module<'a>) -> R) -> R {
+        f(unsafe { &mut *(self.module.deref() as *const Module<'a> as *mut Module<'a>) })
     }
 
     fn visit_struct(&mut self, s: &mut Struct<'a>) -> anyhow::Result<()> {
@@ -782,18 +817,14 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn parse_type(&mut self, parent: &'a mut Type<'a>) -> anyhow::Result<&'a mut Type<'a>> {
+    fn parse_type(&mut self, parent: &'a mut Type<'a>) -> anyhow::Result<&'a Type<'a>> {
         self.consume_comments()?;
         match self.token {
             Token::QuestionMark => {}
 
-            Token::Star => {
+            Token::Star => {}
 
-            }
-
-            Token::BracketOpen => {
-
-            }
+            Token::BracketOpen => {}
 
             Token::Word => {
                 let name = self.word();
@@ -853,7 +884,7 @@ impl<'a> Parser<'a> {
                     Token::QuestionMark,
                     Token::Star,
                     Token::BracketOpen,
-                    Token::Word
+                    Token::Word,
                 ],
                 found: self.token_position(),
             }))
@@ -973,10 +1004,7 @@ mod tests {
     fn test_type() {
         let mut m = Module::new();
 
-        m.new_struct(|t| {
-            // t.name = Some(String::from("Order"));
-            Ok(())
-        });
+        let s = m.new_struct();
         // let (mut t, o) = Type::new_struct(Some(String::from("Order")));
         //
         // Type::new_struct_fn(Some(String::from("Order")), |t, s| {

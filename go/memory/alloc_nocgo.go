@@ -3,7 +3,7 @@
 package memory
 
 import (
-	"github.com/moontrade/wap/memory/tlsf"
+	"github.com/moontrade/wap/go/memory/tlsf"
 	"unsafe"
 )
 

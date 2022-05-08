@@ -6,21 +6,22 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unsafe"
 )
 
 const maxInlineStringSize = 1024 * 1024
 
 type Parser struct {
-	r         strings.Reader
-	content   string
-	ch        rune
-	line      Line
-	index     int
-	byteIndex int
-	col       int
-	err       error
-	file      *File
-	comments  []*Comment
+	r        strings.Reader
+	content  string
+	ch       rune
+	line     Line
+	cidx     int
+	bidx     int
+	col      int
+	err      error
+	file     *File
+	comments []*Comment
 }
 
 func NewParser(data []byte) *Parser {
@@ -197,7 +198,19 @@ loop2:
 			}
 			break loop2
 
-		case '{', '}', '@', '#', '"', '=', '<', '>', '[', ']', ';', ',', '^', '&', '*':
+		case '*':
+			if end == start {
+				end++
+				if end <= len(l.Data)-1 {
+					switch l.Data[end] {
+					case '/':
+						end++
+					}
+				}
+			}
+			break loop2
+
+		case '{', '}', '@', '#', '"', '=', '<', '>', '[', ']', ';', ',', '^', '&':
 			if end == start {
 				end++
 			}
@@ -233,14 +246,14 @@ func (p *Parser) inlineComment(t *Type) bool {
 func (p *Parser) advance() bool {
 	var size int
 	p.ch, size, p.err = p.r.ReadRune()
-	p.index++
+	p.cidx++
 	if p.err != nil {
 		if p.err == io.EOF {
 			p.err = io.ErrUnexpectedEOF
 		}
 		return false
 	}
-	p.byteIndex += size
+	p.bidx += size
 	return true
 }
 
@@ -248,8 +261,8 @@ func (p *Parser) nextLine() bool {
 startOver:
 	next := Line{
 		Number:    p.line.Number + 1,
-		Start:     p.index,
-		ByteStart: p.byteIndex,
+		Start:     p.cidx,
+		ByteStart: p.bidx,
 	}
 	for {
 		if !p.advance() {
@@ -259,9 +272,9 @@ startOver:
 			continue
 		}
 
-		next.Data = p.content[next.ByteStart : p.byteIndex-1]
-		next.End = p.index - 1
-		next.ByteEnd = p.byteIndex - 1
+		next.Data = p.content[next.ByteStart : p.bidx-1]
+		next.End = p.cidx - 1
+		next.ByteEnd = p.bidx - 1
 		next.init()
 		p.line = next
 
@@ -320,8 +333,8 @@ startOver:
 
 			next = Line{
 				Number:    p.line.Number + 1,
-				Start:     p.index,
-				ByteStart: p.byteIndex,
+				Start:     p.cidx,
+				ByteStart: p.bidx,
 			}
 
 		loop2:
@@ -332,26 +345,26 @@ startOver:
 
 				switch p.ch {
 				case '\n':
-					next.Data = p.content[next.ByteStart : p.byteIndex-1]
-					next.End = p.index - 1
-					next.ByteEnd = p.byteIndex - 1
+					next.Data = p.content[next.ByteStart : p.bidx-1]
+					next.End = p.cidx - 1
+					next.ByteEnd = p.bidx - 1
 					p.line = next
 
 					comment.Lines = append(comment.Lines, CommentLine{Line: next, Text: next.Data})
 
 					next = Line{
 						Number:    p.line.Number + 1,
-						Start:     p.index,
-						ByteStart: p.byteIndex,
+						Start:     p.cidx,
+						ByteStart: p.bidx,
 					}
 				case '*':
 					if !p.advance() {
 						return false
 					}
 					if p.ch == '/' {
-						next.Data = p.content[next.ByteStart : p.byteIndex-2]
-						next.End = p.index - 2
-						next.ByteEnd = p.byteIndex - 2
+						next.Data = p.content[next.ByteStart : p.bidx-2]
+						next.End = p.cidx - 2
+						next.ByteEnd = p.bidx - 2
 						p.line = next
 
 						if strings.TrimSpace(next.Data) != "" {
@@ -393,9 +406,11 @@ func (p *Parser) isWord(v string) bool {
 }
 
 func (p *Parser) error(format string, args ...interface{}) bool {
+	l := p.line
+	l.Number--
 	p.err = &Error{
-		Line:   p.line,
-		Index:  p.line.Pos.End,
+		Line:   l,
+		Index:  l.ColStart + l.Pos.Begin,
 		Reason: fmt.Sprintf(format, args...),
 	}
 	return false
@@ -415,7 +430,9 @@ func (p *Parser) flushComments() []*Comment {
 }
 
 func (p *Parser) Parse() error {
-	//loop:
+	if !p.next() {
+		return p.err
+	}
 	for {
 		if p.err != nil {
 			return p.err
@@ -456,9 +473,9 @@ func (p *Parser) Parse() error {
 				return p.err
 			}
 
-		case "struct":
+		case "struct", "union":
 			t := &Type{}
-			if !p.parseType(t) {
+			if !p.parseType(t, false) {
 				return p.err
 			}
 
@@ -478,7 +495,6 @@ func (p *Parser) Parse() error {
 			}
 		}
 	}
-	return p.err
 }
 
 //func (p *Parser) parseNestedStruct(parent *Struct) bool {
@@ -583,7 +599,7 @@ loop:
 
 			case "struct", "enum", "variant":
 				t := &Type{Parent: s.Type}
-				if !p.parseType(t) {
+				if !p.parseType(t, true) {
 					return
 				}
 				continue loop
@@ -727,7 +743,7 @@ loop:
 			}
 		}
 
-		if !p.parseType(field.Type) {
+		if !p.parseType(field.Type, true) {
 			return
 		}
 	}
@@ -795,7 +811,7 @@ func (p *Parser) parseVariant(variant *Variant) {
 	}
 }
 
-func (p *Parser) parseType(t *Type) bool {
+func (p *Parser) parseType(t *Type, isAssignable bool) bool {
 	if p.err != nil {
 		return false
 	}
@@ -812,7 +828,7 @@ func (p *Parser) parseType(t *Type) bool {
 		if !p.next() {
 			return false
 		}
-		return p.parseType(t.Pointer.Type)
+		return p.parseType(t.Pointer.Type, false)
 
 		////////////////////////////////////////////////////////////////////////////////////
 		// optional
@@ -828,7 +844,7 @@ func (p *Parser) parseType(t *Type) bool {
 		if !p.next() {
 			return false
 		}
-		return p.parseType(t.Optional.Type)
+		return p.parseType(t.Optional.Type, false)
 
 		////////////////////////////////////////////////////////////////////////////////////
 		// bool
@@ -841,7 +857,7 @@ func (p *Parser) parseType(t *Type) bool {
 		////////////////////////////////////////////////////////////////////////////////////
 		// i8
 		////////////////////////////////////////////////////////////////////////////////////
-	case "i8", "I8", "int8", "Int8", "schar", "sbyte", "int8_t":
+	case "i8":
 		t.Name = I8.Name
 		t.Code = I8.Code
 		t.Number = I8.Number
@@ -849,7 +865,7 @@ func (p *Parser) parseType(t *Type) bool {
 		////////////////////////////////////////////////////////////////////////////////////
 		// u8
 		////////////////////////////////////////////////////////////////////////////////////
-	case "u8", "U8", "uint8", "UInt8", "byte", "char", "uchar", "uint8_t":
+	case "u8", "byte":
 		t.Name = U8.Name
 		t.Code = U8.Code
 		t.Number = U8.Number
@@ -857,15 +873,17 @@ func (p *Parser) parseType(t *Type) bool {
 		////////////////////////////////////////////////////////////////////////////////////
 		// i16
 		////////////////////////////////////////////////////////////////////////////////////
-	case "i16", "I16", "int16", "Int16", "short", "int16_t":
+	case "i16", "i16l", "i16le":
 		t.Name = I16.Name
 		t.Code = I16.Code
 		t.Number = I16.Number
-	case "i16b", "I16B", "i16be", "i16BE", "I16BE", "int16be", "int16BE", "Int16BE":
+
+	case "i16b", "i16be":
 		t.Name = I16B.Name
 		t.Code = I16B.Code
 		t.Number = I16B.Number
-	case "i16n", "i16ne", "i16N", "i16NE", "int16ne", "int16NE", "Int16NE":
+
+	case "i16n", "i16ne", "int16n", "int16ne":
 		t.Name = I16N.Name
 		t.Code = I16N.Code
 		t.Number = I16N.Number
@@ -873,15 +891,17 @@ func (p *Parser) parseType(t *Type) bool {
 		////////////////////////////////////////////////////////////////////////////////////
 		// u16
 		////////////////////////////////////////////////////////////////////////////////////
-	case "u16", "u16l", "u16le", "uint16", "uint16l", "uint16le", "UInt16", "Uint16", "ushort", "uint16_t":
+	case "u16", "u16l", "u16le":
 		t.Name = U16.Name
 		t.Code = U16.Code
 		t.Number = U16.Number
-	case "u16b", "uint16b", "uint16be", "UInt16BE", "Uint16BE":
+
+	case "u16b", "u16be":
 		t.Name = U16B.Name
 		t.Code = U16B.Code
 		t.Number = U16B.Number
-	case "u16n", "uint16n", "uint16ne", "UInt16NE", "Uint16NE":
+
+	case "u16n", "u16ne":
 		t.Name = U16N.Name
 		t.Code = U16N.Code
 		t.Number = U16N.Number
@@ -889,15 +909,15 @@ func (p *Parser) parseType(t *Type) bool {
 		////////////////////////////////////////////////////////////////////////////////////
 		// i32
 		////////////////////////////////////////////////////////////////////////////////////
-	case "i32", "I32", "int32", "Int32", "int", "int32_t":
+	case "i32", "i32l", "i32le":
 		t.Name = I32.Name
 		t.Code = I32.Code
 		t.Number = I32.Number
-	case "i32b", "i32be", "i32BE", "int32be", "int32BE", "Int32BE":
+	case "i32b", "i32be":
 		t.Name = I32B.Name
 		t.Code = I32B.Code
 		t.Number = I32B.Number
-	case "i32n", "i32ne", "i32N", "i32NE", "int32ne", "int32NE", "Int32NE":
+	case "i32n", "i32ne":
 		t.Name = I32N.Name
 		t.Code = I32N.Code
 		t.Number = I32N.Number
@@ -905,15 +925,15 @@ func (p *Parser) parseType(t *Type) bool {
 		////////////////////////////////////////////////////////////////////////////////////
 		// u32
 		////////////////////////////////////////////////////////////////////////////////////
-	case "u32", "uint32", "UInt32", "Uint32", "uint", "uint32_t":
+	case "u32", "u32l", "u32le":
 		t.Name = U32.Name
 		t.Code = U32.Code
 		t.Number = U32.Number
-	case "u32b", "u32be", "u32BE", "unt32be", "unt32BE", "Unt32BE":
+	case "u32b", "u32be":
 		t.Name = U32B.Name
 		t.Code = U32B.Code
 		t.Number = U32B.Number
-	case "u32n", "u32ne", "u32N", "u32NE", "U32N", "U32NE", "uint32ne", "uint32NE", "UInt32NE":
+	case "u32n", "u32ne":
 		t.Name = U32N.Name
 		t.Code = U32N.Code
 		t.Number = U32N.Number
@@ -921,15 +941,15 @@ func (p *Parser) parseType(t *Type) bool {
 		////////////////////////////////////////////////////////////////////////////////////
 		// i64
 		////////////////////////////////////////////////////////////////////////////////////
-	case "i64", "I64", "int64", "Int64", "long", "int64_t":
+	case "i64", "i64l", "i64le":
 		t.Name = I64.Name
 		t.Code = I64.Code
 		t.Number = I64.Number
-	case "i64b", "I64B", "i64be", "i64BE", "I64BE", "int64be", "int64BE", "Int64BE":
+	case "i64b", "i64be":
 		t.Name = I64B.Name
 		t.Code = I64B.Code
 		t.Number = I64B.Number
-	case "i64n", "I64N", "i64ne", "i64N", "i64NE", "I64NE", "int64ne", "int64NE", "Int64NE":
+	case "i64n", "i64ne":
 		t.Name = I64N.Name
 		t.Code = I64N.Code
 		t.Number = I64N.Number
@@ -937,15 +957,15 @@ func (p *Parser) parseType(t *Type) bool {
 		////////////////////////////////////////////////////////////////////////////////////
 		// u64
 		////////////////////////////////////////////////////////////////////////////////////
-	case "u64", "U64", "uint64", "UInt64", "Uint64", "ulong", "uint64_t":
+	case "u64", "u64l", "u64le":
 		t.Name = U64.Name
 		t.Code = U64.Code
 		t.Number = U64.Number
-	case "u64b", "U64B", "u64be", "u64BE", "U64BE", "unt64be", "unt64BE", "Unt64BE":
+	case "u64b", "u64be":
 		t.Name = U64B.Name
 		t.Code = U64B.Code
 		t.Number = U64B.Number
-	case "u64n", "U64N", "u64ne", "u64N", "u64NE", "U64NE", "uint64ne", "uint64NE", "UInt64NE":
+	case "u64n", "u64ne":
 		t.Name = U64N.Name
 		t.Code = U64N.Code
 		t.Number = U64N.Number
@@ -953,15 +973,17 @@ func (p *Parser) parseType(t *Type) bool {
 		////////////////////////////////////////////////////////////////////////////////////
 		// f32
 		////////////////////////////////////////////////////////////////////////////////////
-	case "f32", "F32", "float32", "Float32", "float", "float32_t":
+	case "f32", "f32l", "f32le":
 		t.Name = F32.Name
 		t.Code = F32.Code
 		t.Number = F32.Number
-	case "f32b", "F32B", "f32be", "f32BE", "F32BE", "float32be", "float32BE", "Float32BE":
+
+	case "f32b", "f32be":
 		t.Name = F32B.Name
 		t.Code = F32B.Code
 		t.Number = F32B.Number
-	case "f32n", "F32N", "f32ne", "f32N", "f32NE", "F32NE", "float32ne", "float32NE", "Float32NE":
+
+	case "f32n", "f32ne":
 		t.Name = F32N.Name
 		t.Code = F32N.Code
 		t.Number = F32N.Number
@@ -969,18 +991,56 @@ func (p *Parser) parseType(t *Type) bool {
 		////////////////////////////////////////////////////////////////////////////////////
 		// f64
 		////////////////////////////////////////////////////////////////////////////////////
-	case "f64", "F64", "float64", "Float64", "f64l", "f64le", "double", "float64_t":
+	case "f64", "f64l", "f64le":
 		t.Name = F64.Name
 		t.Code = F64.Code
 		t.Number = F64.Number
-	case "f64b", "F64B", "f64be", "f64BE", "F64BE", "float64be", "float64BE", "Float64BE":
+
+	case "f64b", "f64be":
 		t.Name = F64B.Name
 		t.Code = F64B.Code
 		t.Number = F64B.Number
-	case "f64n", "F64N", "f64ne", "f64N", "f64NE", "F64NE", "float64ne", "float64NE", "Float64NE":
+
+	case "f64n", "f64ne":
 		t.Name = F64N.Name
 		t.Code = F64N.Code
 		t.Number = F64N.Number
+
+		////////////////////////////////////////////////////////////////////////////////////
+		// i128
+		////////////////////////////////////////////////////////////////////////////////////
+	case "i128", "i128l", "i128le":
+		t.Name = I128.Name
+		t.Code = I128.Code
+		t.Number = I128.Number
+
+	case "i128b", "i128be":
+		t.Name = I128B.Name
+		t.Code = I128B.Code
+		t.Number = I128B.Number
+
+	case "i128n", "i128ne":
+		t.Name = I128N.Name
+		t.Code = I128N.Code
+		t.Number = I128N.Number
+
+		////////////////////////////////////////////////////////////////////////////////////
+		// u128
+		////////////////////////////////////////////////////////////////////////////////////
+	case "u128", "u128l", "u128le":
+		t.Name = U128.Name
+		t.Code = U128.Code
+		t.Number = U128.Number
+
+	case "u128b", "u128be":
+		t.Name = U128B.Name
+		t.Code = U128B.Code
+		t.Number = U128B.Number
+
+	case "u128n", "u128ne":
+		t.Name = U128N.Name
+		t.Code = U128N.Code
+		t.Number = U128N.Number
 
 		////////////////////////////////////////////////////////////////////////////////////
 		// string
@@ -991,6 +1051,41 @@ func (p *Parser) parseType(t *Type) bool {
 		// map
 		////////////////////////////////////////////////////////////////////////////////////
 	case "map":
+		if !p.next() {
+			return false
+		}
+		if p.word() != "<" {
+			return p.error("expected '<' after map keyword")
+		}
+		t.Code = TypeCodeMap
+		t.Map = &Map{
+			Type: t,
+			Kind: TypeCodeMap,
+			Key: &Type{
+				Parent: t,
+			},
+			Value: &Type{
+				Parent: t,
+			},
+		}
+		if !p.next() {
+			return p.error("expected key type for map declaration")
+		}
+		if !p.parseType(t.Map.Key, false) {
+			return false
+		}
+		if p.word() != "," {
+			return p.error("expected ',' after map value declaration")
+		}
+		if !p.next() {
+			return false
+		}
+		if !p.parseType(t.Map.Value, false) {
+			return false
+		}
+		if p.word() != ">" {
+			return p.error("expected '>' after map value declaration")
+		}
 
 		////////////////////////////////////////////////////////////////////////////////////
 		// ordered map
@@ -1037,7 +1132,7 @@ func (p *Parser) parseType(t *Type) bool {
 			}
 			t.Code = TypeCodeVector
 			t.Vector.Kind = TypeCodeVector
-			return p.parseType(vector.Element)
+			return p.parseType(vector.Element, false)
 		}
 
 		length, err := strconv.ParseInt(p.word(), 10, 32)
@@ -1052,7 +1147,7 @@ func (p *Parser) parseType(t *Type) bool {
 			return p.error("incomplete array type declaration")
 		}
 
-		return p.parseType(vector.Element)
+		return p.parseType(vector.Element, false)
 
 		////////////////////////////////////////////////////////////////////////////////////
 		// variant
@@ -1105,13 +1200,7 @@ func (p *Parser) parseType(t *Type) bool {
 			return false
 		}
 
-		enum := &Enum{Type: t}
-		t.Enum = enum
-		t.Code = TypeCodeEnum
-		enum.ValueType = &Type{}
-		enum.ValueType.Parent = t
-
-		// named struct declaration must have a name
+		// named enum declaration must have a name
 		if t.Field == nil {
 			t.Name = p.word()
 			if !p.validateDeclaredName(t.Name, "variant") {
@@ -1126,15 +1215,44 @@ func (p *Parser) parseType(t *Type) bool {
 			}
 		}
 
-		if p.word() != ":" {
-			return p.error("enum requires a ':' followed by an integral type then a '{'")
+		// Rust like enum variant declaration?
+		if p.word() == "{" {
+			if !p.next() {
+				return false
+			}
+
+			variant := &Variant{Type: t}
+			variant.Inline = t.Field
+			t.Variant = variant
+			t.Code = TypeCodeVariant
+			t.Comments = p.flushComments()
+			t.Name = ""
+
+			if t.Field == nil {
+				if _, s := t.ParentStruct(); s != nil {
+					s.Inner = append(s.Inner, t)
+				}
+			}
+
+			p.parseVariant(variant)
+			return p.err == nil
 		}
+
+		if p.word() != ":" {
+			return p.error("enum requires a ':' followed by an integral type followed by a '{'")
+		}
+
+		enum := &Enum{Type: t}
+		t.Enum = enum
+		t.Code = TypeCodeEnum
+		enum.ValueType = &Type{}
+		enum.ValueType.Parent = t
 
 		if !p.next() {
 			return false
 		}
 
-		if !p.parseType(enum.ValueType) {
+		if !p.parseType(enum.ValueType, false) {
 			return false
 		}
 		if enum.ValueType.Number == nil {
@@ -1153,7 +1271,9 @@ func (p *Parser) parseType(t *Type) bool {
 		////////////////////////////////////////////////////////////////////////////////////
 		// struct
 		////////////////////////////////////////////////////////////////////////////////////
-	case "struct":
+	case "union", "struct", "struct16", "struct32", "struct64":
+		isUnion := p.word() == "union"
+
 		if !p.next() {
 			return false
 		}
@@ -1162,7 +1282,11 @@ func (p *Parser) parseType(t *Type) bool {
 		_, parent := t.ParentStruct()
 		s.Parent = parent
 		t.Struct = s
-		t.Code = TypeCodeStruct
+		if isUnion {
+			t.Code = TypeCodeUnion
+		} else {
+			t.Code = TypeCodeStruct
+		}
 		s.Inline = t.Field
 		s.Type.Comments = p.flushComments()
 
@@ -1193,9 +1317,9 @@ func (p *Parser) parseType(t *Type) bool {
 		////////////////////////////////////////////////////////////////////////////////////
 		// union
 		////////////////////////////////////////////////////////////////////////////////////
-	case "union":
-		return p.error("unions may only be declared inline within a struct instead use " +
-			"'variant' type for a type-safe named union")
+	//case "union":
+	//	return p.error("unions may only be declared inline within a struct instead use " +
+	//		"'variant' type for a type-safe named union")
 
 	default:
 		////////////////////////////////////////////////////////////////////////////////////
@@ -1226,6 +1350,10 @@ func (p *Parser) parseType(t *Type) bool {
 		return p.inlineComment(t)
 	}
 
+	if !isAssignable {
+		return true
+	}
+
 	// consume optional semicolon or comma
 	if p.word() == ";" || p.word() == "," {
 		if !p.nextWord() {
@@ -1254,6 +1382,15 @@ func (p *Parser) parseType(t *Type) bool {
 			}
 		} else {
 			return p.error("value declarations may only be declared on const or a struct field")
+		}
+
+		if p.word() == "//" {
+			return p.inlineComment(t)
+		}
+
+		if p.word() == "/*" {
+			p.parseSlashStarComment()
+			return p.err == nil
 		}
 
 		if !p.nextWord() {
@@ -1336,7 +1473,11 @@ loop:
 			if !p.nextWord() {
 				break loop
 			}
-		case ".", ",":
+
+		case ";", ",", "/*", "//":
+			break loop
+
+		case ".":
 			return 0, false
 
 		default:
@@ -1375,7 +1516,11 @@ loop:
 			if !p.nextWord() {
 				break loop
 			}
-		case ".", ",":
+
+		case ";", ",", "/*", "//":
+			break loop
+
+		case ".":
 			return 0, false
 
 		default:
@@ -1512,14 +1657,14 @@ func (p *Parser) parseValue(t *Type) bool {
 		t.Value = &Value{Type: t, Unknown: &UnknownValue{Value: p.word()}}
 		return p.next()
 
-	case TypeCodeStruct:
+	case TypeCodeMap, TypeCodeMapOrdered, TypeCodeMapTree, TypeCodeSet, TypeCodeSetOrdered, TypeCodeSetTree:
 		value, success := p.parseObjectValue(t)
 		if !success {
 			return false
 		}
 		_ = value
 
-	case TypeCodeUnion:
+	case TypeCodeStruct, TypeCodeUnion:
 		value, success := p.parseObjectValue(t)
 		if !success {
 			return false
@@ -1546,6 +1691,7 @@ func (p *Parser) parseValue(t *Type) bool {
 	return true
 }
 
+// parseObjectValue parses a JSON like object or array like value declaration
 func (p *Parser) parseObjectValue(t *Type) (*Object, bool) {
 	if p.word() != "{" {
 		p.error("expected beginning '{' for value declaration instead: %s", p.word())
@@ -1652,12 +1798,17 @@ func (p *Parser) isNumber(v string) *NumberValue {
 	if len(v) == 0 {
 		return nil
 	}
-	decimal := false
 	var (
-		i int
-		c rune
+		decimal = false
+		sign    = false
+		i       int
+		c       rune
 	)
 	for i, c = range v {
+		if i == 0 && c == '-' {
+			sign = true
+			continue
+		}
 		if c < '0' || c > '9' {
 			if c == '.' || c == ',' {
 				decimal = true
@@ -1668,7 +1819,29 @@ func (p *Parser) isNumber(v string) *NumberValue {
 		}
 	}
 	if !decimal {
-		return
+		n := &NumberValue{}
+		v, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return nil
+		}
+		n.Set(*(*uint64)(unsafe.Pointer(&v)))
+		return n
+	} else {
+		n := &NumberValue{}
+		if sign {
+			v, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				return nil
+			}
+			n.Set(*(*uint64)(unsafe.Pointer(&v)))
+		} else {
+			v, err := strconv.ParseUint(v, 10, 64)
+			if err != nil {
+				return nil
+			}
+			n.Set(v)
+		}
+		return n
 	}
 }
 
@@ -1813,37 +1986,41 @@ func isValidNameAfterFirstChar(ch rune) bool {
 }
 
 func (p *Parser) parseSlashStarComment() {
-	comment := &Comment{}
-	comment.Lines = append(comment.Lines, CommentLine{
-		Line: p.line,
-		Text: strings.TrimSpace(p.line.Data[p.line.Pos.Begin+2:]),
-	})
-	p.comments = append(p.comments, comment)
+	comment := &Comment{
+		Star: true,
+	}
+	begin := p.line
+	_ = begin
+
+	if !p.next() {
+		return
+	}
+
+	start := p.line
+
 	for {
-		if !p.nextLine() {
+		if p.word() == "*/" {
+			text := start.Data[start.Pos.Begin:p.line.Pos.Begin]
+			comment.Lines = append(comment.Lines, CommentLine{
+				Line: p.line,
+				Text: strings.TrimSpace(text),
+			})
+			p.next()
 			return
 		}
-		index := strings.Index(p.line.Data, "*/")
-		if index > -1 {
-			text := p.line.Data[0:index]
-			if len(strings.TrimSpace(text)) > 2 {
-				p.err = &Error{
-					Line:   p.line,
-					Index:  index + 2,
-					Reason: "unexpected text after closing comment identifier '*/'",
-				}
+
+		if !p.nextWord() {
+			text := start.Data[start.ColStart+start.Pos.Begin:]
+			comment.Lines = append(comment.Lines, CommentLine{
+				Line: p.line,
+				Text: strings.TrimSpace(text),
+			})
+
+			if !p.nextLine() {
 				return
 			}
-			comment.Lines = append(comment.Lines, CommentLine{
-				Line: p.line,
-				Text: text,
-			})
-			return
-		} else {
-			comment.Lines = append(comment.Lines, CommentLine{
-				Line: p.line,
-				Text: p.line.Data,
-			})
+
+			start = p.line
 		}
 	}
 }

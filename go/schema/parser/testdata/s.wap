@@ -24,9 +24,9 @@ Another line
 // Bounds Checking
 // Only pay for bounds checking when necessary.
 // Modes.
-// 1. Trusted - Message was built with current generated code. No bounds checking at all.
+// 1. Safe - Message was built with current generated code. No bounds checking at all.
 // 2. Partial - Use a view/builder variant for each internal struct root
-// 3. Safe - Perform bounds check on every access
+// 3. Unsafe - Perform bounds check on every access
 
 // Schema evolution .lock file to prevent catastrophic evolution deployment failures
 
@@ -44,14 +44,19 @@ const MAP str_float_map = [
     "bye", "hi"
 ]
 
-struct price {
+struct Price {
     open f64; high ?f64, low f64;
     close f64
 }
 
-struct order {
+union Union {
+    a u64
+    b i64
+}
+
+struct Order {
     @1 id   i32b    = 10 // 32bit signed big endian
-    @2 cost f64     = MAX
+    @2 cost f64     = MAX /* test */
 
     @11 code enum : i32 {
         CREATE = 0
@@ -60,17 +65,17 @@ struct order {
     @20 code enum : i32 { CREATE = 0, UPDATE = 1 }
 
     // 4 byte padding comment above
-    ... 4;
+    .. 4;
     ... 4; // 4 byte padding inline comment
     ... 5, // 5 byte padding inline comment
-    ... 6 // 6 byte padding inline comment
+    .. 6 // 6 byte padding inline comment
 
     @4 price
         || j:Price
         || j:p
         || j:"@price"
         || pb:5
-        : map<string8 : ?f64>
+        : map<i64, ?f64>
         = {"hi": "bye", "bye", nil}
 
     @3 union {
@@ -95,6 +100,9 @@ struct order {
     8 values_array     *[4]Value    // array pointer
     9 values_vector    []*Value     // always a pointer
 
+    name string8..
+    slab [8]byte..
+
     enum Code : i32 {
         SUCCESS = 0
         ERROR = 1
@@ -113,11 +121,16 @@ variant String {
     string
 }
 
+enum String {
+    string15
+    string
+}
+
 // variant is a type-safe union
 // other names:
 //      tagged union
 //      oneof
-// Some languages have this feature built-in
+// Some languages have this type built-in
 //      Rust = enum
 //      C++ = std::variant
 //      Kotlin = sealed class
@@ -139,7 +152,7 @@ variant Value {
 layout of a variant type
 struct Variant {
     @1 index u16
-    @2 union {
+    @2 value union {
         a bool
         b i64
         c f64

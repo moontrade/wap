@@ -1,39 +1,14 @@
-# WAP (WebAssembly Proto)
+# WAP - WebAssembly Proto
 
 ## Expressive Flat Data Structures
 Language / platform-agnostic wire-safe linear (flat) memory rich data models.
 
 ## Dramatically reduce allocations
 ####
-    struct Order {
-        struct Line {
-            int32_t number;
-        };
 
-        std::string id;
-        std::vector<Line> lines;
-    };
 
-    struct Order {
-        struct Line{};
+## Stop parsing so dang much
 
-        struct Reader {
-            inline std::string_view id() const;
-
-            // mutable reader
-            inline bool id(std::string_view value);
-
-            inline wap::vector<Line> lines() const;
-        };
-
-        struct Builder {
-            inline wap::vector<Line>::builder lines();
-        };
-    };
-
-## Why?
-The impedance mismatch of language native in-memory data structures/classes and those sent across the wire
-and then into possibly a completely difference language's native in-
 
 # Data Types
 
@@ -49,9 +24,11 @@ and then into possibly a completely difference language's native in-
     i16
     i32
     i64
+    i128
     u16
     u32
     u64
+    u128
     f32
     f64
 
@@ -60,9 +37,11 @@ and then into possibly a completely difference language's native in-
     i16b
     i32b
     i64b
+    i128b
     u16b
     u32b
     u64b
+    u128b
     f32b
     f64b
 
@@ -71,9 +50,11 @@ and then into possibly a completely difference language's native in-
     i16n
     i32n
     i64n
+    i128n
     u16n
     u32n
     u64n
+    u128n
     f32n
     f64n
 
@@ -96,12 +77,12 @@ Embedded string with a max total size including length field.
 ### example:
     string8
 
-## String Variant
-
+## String Variant (small string optimization)
+Inline string with heap allocated spill-over when string size is larger than inline size.
 ### template:
-    string{size}...
+    string{size}..
 ### example:
-    string8...
+    string8..
 ### shorthand for:
     variant vstring8 {
         string8
@@ -259,6 +240,13 @@ Messages are built using an internal dynamic memory allocator with size classes 
 
 #### Segregated Fit (Real-time)
 
+---
+## Rust Implementation
+
+### Bounds Checking Elimination
+Only pay for bounds checking when necessary.
+
+---
 ## C++ Implementation
 
 ### Single Header File
@@ -276,6 +264,7 @@ Only pay for bounds checking when necessary.
 3. Reader Variant (visit) - Use a reader/builder variant for each internal struct root. Wire mode optimization. Potential partial bounds check elimination.
 4. Builder - No bounds checking, however for flexible messages there will likely be another pointer dereference due to underlying buffer pointer instability when resize is required. For fixed sized messages, it's the same as Struct.
 
+---
 ## Go Implementation
 
 ### Bounds Checking Optimizations
@@ -295,6 +284,3 @@ TinyGo is supported including WASM!
 
 
 
-## Rust Implementation
-
-### TODO

@@ -65,6 +65,7 @@ func TestAlloc(t *testing.T) {
 		h := (*Order)(p.Unsafe())
 		h.SetPrice(99.99)
 		fmt.Println(h.Price())
+		p.Free()
 	}
 	{
 		p := memory.GCAllocZeroed(32)

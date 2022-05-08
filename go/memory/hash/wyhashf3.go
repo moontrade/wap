@@ -142,6 +142,10 @@ func U64(v uint64) uint64 {
 		(v>>32|(v&0xFFFFFFFF))^DefaultSeed))
 }
 
+func HashBytes(b []byte) uint64 {
+	return Hash(unsafe.Pointer(&b[0]), uint64(len(b)), DefaultSeed)
+}
+
 func Hash(bytes unsafe.Pointer, length uint64, seed uint64) uint64 {
 	var (
 		a uint64
