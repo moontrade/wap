@@ -1,6 +1,5 @@
 use core::ptr;
-use std::alloc::{alloc, alloc_zeroed, dealloc, Layout, realloc};
-use std::ptr::NonNull;
+use std::alloc::{alloc_zeroed, dealloc, Layout, realloc};
 
 pub trait Allocator {
     fn allocate(size: usize) -> *mut u8;
@@ -19,9 +18,6 @@ impl Allocator for Global {
     }
 
     fn deallocate(p: *mut u8, size: usize) {
-        // unsafe { ptr::drop_in_place(p); }
-        // unsafe { Box::from_raw(p); }
-        // unsafe { std::alloc::Global.deallocate(NonNull::new(p), Layout::from_size_align_unchecked(size, 1)); }
         unsafe { dealloc(p, Layout::from_size_align_unchecked(size, 1)) }
     }
 
@@ -38,15 +34,15 @@ impl Allocator for Global {
 pub struct Borrowed;
 
 impl Allocator for Borrowed {
-    fn allocate(size: usize) -> *mut u8 {
+    fn allocate(_size: usize) -> *mut u8 {
         ptr::null_mut()
     }
 
-    fn deallocate(p: *mut u8, size: usize) {}
+    fn deallocate(_p: *mut u8, _size: usize) {}
 
-    fn deallocate_layout(p: *mut u8, layout: Layout) {}
+    fn deallocate_layout(_p: *mut u8, _layout: Layout) {}
 
-    fn reallocate(p: *mut u8, size: usize) -> (*mut u8, usize) {
+    fn reallocate(_p: *mut u8, _size: usize) -> (*mut u8, usize) {
         (ptr::null_mut(), 0)
     }
 }

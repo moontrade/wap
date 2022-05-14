@@ -26,7 +26,7 @@ pub trait Header: Sized {
     unsafe fn get_base_size(p: *const u8) -> usize;
 
     unsafe fn init(p: *mut u8, size: usize, base_size: usize) -> *mut u8 {
-        (unsafe { (&mut *(p as *mut Self)) }).
+        (unsafe { &mut *(p as *mut Self) }).
             set_size(size).
             set_base_size(base_size);
         p

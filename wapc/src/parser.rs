@@ -11,18 +11,39 @@ use std::ops::{Deref, DerefMut};
 use std::ptr::null_mut;
 use std::str::{CharIndices, FromStr};
 
-use crate::model::{Const, Enum, KindData, Mut, Struct, Type, Union, Variant};
+use crate::model::{Const, Endian, Enum, Kind, KindVariant, Mut, Struct, Type};
 
 use super::model::{Comments, Module, Position};
 
 pub enum ParseError {
-    InvalidCharacter { token: TokenSpan, character: char },
-    UnexpectedEOF { token: TokenSpan },
-    Expected { found: TokenPosition, expected: Token },
-    ExpectedOneOf { found: TokenPosition, one_of: Vec<Token> },
-    InvalidFieldNumber { reason: &'static str, float: Option<f64>, int: Option<i128> },
-    BadNumeral { token: TokenSpan, reason: String },
-    CannotNest { parent: &'static str, child: &'static str },
+    InvalidCharacter {
+        token: TokenSpan,
+        character: char,
+    },
+    UnexpectedEOF {
+        token: TokenSpan,
+    },
+    Expected {
+        found: TokenSpan,
+        expected: Token,
+    },
+    ExpectedOneOf {
+        found: TokenSpan,
+        one_of: Vec<Token>,
+    },
+    InvalidFieldNumber {
+        reason: &'static str,
+        float: Option<f64>,
+        int: Option<i128>,
+    },
+    VariantFieldDefault {
+        token: TokenPosition,
+    },
+    BadNumeral {
+        token: TokenSpan,
+        reason: String,
+    },
+    // CannotNest { parent: &'static str, child: &'static str },
 }
 
 pub struct Parser<'a> {
@@ -32,8 +53,11 @@ pub struct Parser<'a> {
     mark: Position,
     next_line: usize,
     next_col: usize,
+    line_breaks: usize,
+    mark_line_breaks: usize,
     pos: Position,
     current_char: char,
+    current_line_index: usize,
     prev: Token,
     token: Token,
     next: Token,
@@ -48,15 +72,94 @@ pub enum Numeral<'a> {
 }
 
 impl ParseError {
+    fn format_span<'a>(&self, span: &TokenSpan, out: &mut String) -> anyhow::Result<()> {
+        let line = format!("line {:}: ", span.start.line);
+        out.write_str(line.as_str())?;
+        out.write_str(span.slice.as_str())?;
+        out.write_char('\n')?;
+        for _ in 0..line.len() {
+            out.write_char(' ')?;
+        }
+        for _ in 1..span.start.col {
+            out.write_char(' ')?;
+        }
+        for _ in 0..=span.end.col - span.start.col {
+            out.write_char('^')?;
+        }
+        out.write_char('\n')?;
+        for _ in 0..line.len() {
+            out.write_char(' ')?;
+        }
+        for _ in 1..span.start.col {
+            out.write_char(' ')?;
+        }
+        out.write_str(span.token.to_string().as_str())?;
+        Ok(())
+    }
+
+    fn format_pos<'a>(&self, pos: &TokenPosition, out: &mut String) -> anyhow::Result<()> {
+        out.write_fmt(format_args!("{:}:{:}", pos.start.line, pos.start.col))?;
+        for _ in 1..=pos.start.col {
+            out.write_char(' ')?;
+        }
+        out.write_str(pos.token.to_string().as_str())?;
+        Ok(())
+    }
+
+    pub fn format(&self) -> anyhow::Result<String> {
+        let mut out = String::new();
+        match &self {
+            ParseError::InvalidCharacter { token, character } => {
+                out.write_str("invalid character '")?;
+                out.write_char(*character)?;
+                out.write_str("'\n")?;
+                self.format_span(token, &mut out)?;
+            }
+            ParseError::UnexpectedEOF { token } => {
+                out.write_str("unexpected EOF")?;
+            }
+            ParseError::Expected { found, expected } => {
+                out.write_str("expected Token: ")?;
+                out.write_str(expected.to_chars())?;
+                out.write_str("\n")?;
+                self.format_span(found, &mut out)?;
+            }
+            ParseError::ExpectedOneOf { found, one_of } => {
+                out.write_str("expected one of the following tokens: ")?;
+                for t in one_of {
+                    out.write_str(t.to_string().as_str())?;
+                    out.write_char(' ')?;
+                }
+                out.write_str("\n")?;
+                self.format_span(found, &mut out)?;
+            }
+            ParseError::InvalidFieldNumber { reason, float, int } => {}
+            ParseError::VariantFieldDefault { token } => {
+                out.write_str("union or variant field cannot have a default value")?;
+                out.write_str("\n")?;
+                self.format_pos(token, &mut out)?;
+            }
+            ParseError::BadNumeral { token, reason } => {
+                out.write_str("bad numeral: ")?;
+                out.write_str(reason.as_str())?;
+                out.write_str("'\n")?;
+                self.format_span(token, &mut out)?;
+            } // ParseError::CannotNest { parent, child } => {}
+        }
+
+        Ok(out)
+    }
+
     fn fmt0(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            ParseError::InvalidCharacter { .. } => Ok(()),
-            ParseError::UnexpectedEOF { .. } => Ok(()),
-            ParseError::Expected { .. } => Ok(()),
-            ParseError::BadNumeral { .. } => Ok(()),
-            ParseError::ExpectedOneOf { .. } => Ok(()),
-            ParseError::InvalidFieldNumber { .. } => Ok(()),
-            ParseError::CannotNest { .. } => Ok(())
+        match self.format() {
+            Ok(s) => {
+                f.write_str(s.as_str())?;
+                Ok(())
+            }
+            Err(reason) => {
+                f.write_str(reason.to_string().as_str())?;
+                Ok(())
+            }
         }
     }
 }
@@ -82,14 +185,17 @@ pub struct TokenPosition {
 
 impl TokenPosition {
     fn new(kind: Token, start: Position, end: Position) -> Self {
-        Self { token: kind, start, end }
+        Self {
+            token: kind,
+            start,
+            end,
+        }
     }
 }
 
 impl TokenPosition {
     fn fmt0(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        self.token.fmt0(f);
-        Ok(())
+        self.token.fmt0(f)
     }
 }
 
@@ -103,14 +209,18 @@ pub struct TokenSpan {
 
 impl TokenSpan {
     fn new(kind: Token, start: Position, end: Position, slice: String) -> Self {
-        Self { token: kind, start, end, slice }
+        Self {
+            token: kind,
+            start,
+            end,
+            slice,
+        }
     }
-}
 
-impl TokenSpan {
     fn fmt0(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        self.token.fmt0(f);
-        Ok(())
+        f.write_str(format!("{:}", self.start.line).as_str());
+        f.write_str(self.slice.as_str());
+        self.token.fmt0(f)
     }
 }
 
@@ -118,6 +228,7 @@ impl TokenSpan {
 pub enum Token {
     None,
     NewLine,
+    Whitespace,
     ForwardSlash,
     BackSlash,
     Period,
@@ -144,53 +255,95 @@ pub enum Token {
     Equals,
     Plus,
     Minus,
-    Comment,
-    CommentMulti,
+    LineComment,
+    BlockComment,
     Word,
+    QualifiedName,
     Numeral,
     EOF,
-    UnexpectedEOF,
+}
+
+impl Token {
+    fn to_chars(&self) -> &'static str {
+        match self {
+            Token::None => "<<NONE>>",
+            Token::NewLine => "<LF>",
+            Token::Whitespace => "<WHITESPACE>",
+            Token::ForwardSlash => "/",
+            Token::BackSlash => "\\",
+            Token::Period => ".",
+            Token::DotDot => "..",
+            Token::Star => "*",
+            Token::Comma => ",",
+            Token::Colon => ":",
+            Token::ColonColon => "::",
+            Token::Semicolon => ";",
+            Token::Pound => "#",
+            Token::CurlyOpen => "{",
+            Token::CurlyClose => "}",
+            Token::At => "@",
+            Token::DoubleQuote => "\"",
+            Token::SingleQuote => "'",
+            Token::LessThan => "<",
+            Token::GreaterThan => ">",
+            Token::BracketOpen => "[",
+            Token::BracketClose => "]",
+            Token::Carat => "^",
+            Token::Ampersand => "&",
+            Token::QuestionMark => "?",
+            Token::Or => "|",
+            Token::Equals => "=",
+            Token::Plus => "+",
+            Token::Minus => "-",
+            Token::LineComment => "//",
+            Token::BlockComment => "/*",
+            Token::Word => "<WORD>",
+            Token::QualifiedName => "<QUALIFIED::NAME>",
+            Token::Numeral => "<NUMERAL>",
+            Token::EOF => "<EOF>",
+        }
+    }
 }
 
 impl Token {
     fn fmt0(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Token::None => f.write_str("None"),
+            Token::None => f.write_str("<<NONE>>"),
             Token::NewLine => f.write_str("<NEW_LINE>"),
-            Token::ForwardSlash => f.write_str("/"),
-            Token::BackSlash => f.write_str("\\"),
-            Token::Period => f.write_str("."),
-            Token::DotDot => f.write_str(".."),
-            Token::Star => f.write_str("*"),
-            Token::Comma => f.write_str(","),
-            Token::Colon => f.write_str(":"),
-            Token::ColonColon => f.write_str("::"),
-            Token::Semicolon => f.write_str(";"),
-            Token::Pound => f.write_str("#"),
-            Token::CurlyOpen => f.write_str("{"),
-            Token::CurlyClose => f.write_str("}"),
-            Token::At => f.write_str("@"),
-            Token::DoubleQuote => f.write_str("\""),
-            Token::SingleQuote => f.write_str("'"),
-            Token::LessThan => f.write_str("<"),
-            Token::GreaterThan => f.write_str(">"),
-            Token::BracketOpen => f.write_str("["),
-            Token::BracketClose => f.write_str("]"),
-            Token::Carat => f.write_str("^"),
-            Token::Ampersand => f.write_str("&"),
-            Token::QuestionMark => f.write_str("?"),
-            Token::Or => f.write_str("|"),
-            Token::Equals => f.write_str("="),
-            Token::Plus => f.write_str("+"),
-            Token::Minus => f.write_str("-"),
-            Token::Comment => f.write_str("// <COMMENT>"),
-            Token::CommentMulti => f.write_str("/* <COMMENT>"),
+            Token::Whitespace => f.write_str("<WHITESPACE>"),
+            Token::ForwardSlash => f.write_str("<FORWARD SLASH>"),
+            Token::BackSlash => f.write_str("<BACKSLASH>"),
+            Token::Period => f.write_str("<.>"),
+            Token::DotDot => f.write_str("<..>"),
+            Token::Star => f.write_str("<STAR>"),
+            Token::Comma => f.write_str("<COMMA>"),
+            Token::Colon => f.write_str("<COLON>"),
+            Token::ColonColon => f.write_str("<MODULE::SEPARATOR>"),
+            Token::Semicolon => f.write_str("<SEMICOLON>"),
+            Token::Pound => f.write_str("<POUND>"),
+            Token::CurlyOpen => f.write_str("<CURLYOPEN>"),
+            Token::CurlyClose => f.write_str("<CURLYCLOSE>"),
+            Token::At => f.write_str("<AT>"),
+            Token::DoubleQuote => f.write_str("<DOUBLE QUOTE>"),
+            Token::SingleQuote => f.write_str("<SINGLE QUOTE>"),
+            Token::LessThan => f.write_str("<LESS THAN>"),
+            Token::GreaterThan => f.write_str("<GREATER THAN>"),
+            Token::BracketOpen => f.write_str("<OPEN BRACKET>"),
+            Token::BracketClose => f.write_str("<CLOSE BRACKET>"),
+            Token::Carat => f.write_str("<CARET>"),
+            Token::Ampersand => f.write_str("<AND>"),
+            Token::QuestionMark => f.write_str("<OPTIONAL>"),
+            Token::Or => f.write_str("<OR>"),
+            Token::Equals => f.write_str("<EQUALS>"),
+            Token::Plus => f.write_str("<PLUS>"),
+            Token::Minus => f.write_str("<MINUS>"),
+            Token::LineComment => f.write_str("<LINE COMMENT>"),
+            Token::BlockComment => f.write_str("<BLOCK COMMENT>"),
             Token::Word => f.write_str("<WORD>"),
+            Token::QualifiedName => f.write_str("<QUALIFIED::NAME>"),
             Token::Numeral => f.write_str("<NUMERAL>"),
             Token::EOF => f.write_str("<EOF>"),
-            Token::UnexpectedEOF => f.write_str("<UNEXPECTED EOF>"),
-        };
-        Ok(())
+        }
     }
 }
 
@@ -219,9 +372,12 @@ impl<'a> Parser<'a> {
             iter: contents.char_indices().peekable(),
             mark: Position::new(0, 0, 0),
             next_line: 1,
+            line_breaks: 0,
+            mark_line_breaks: 0,
             next_col: 1,
             pos: Position::new(1, 1, 0),
             current_char: '\0',
+            current_line_index: 0,
             prev: Token::None,
             token: Token::None,
             next: Token::None,
@@ -232,7 +388,7 @@ impl<'a> Parser<'a> {
         Ok(module)
     }
 
-    #[inline(always)]
+    #[inline]
     fn advance(&mut self) -> Option<char> {
         match self.iter.next() {
             None => None,
@@ -242,6 +398,9 @@ impl<'a> Parser<'a> {
                     return None;
                 }
 
+                if self.pos.line < self.next_line {
+                    self.current_line_index = index;
+                }
                 self.pos.line = self.next_line;
                 self.pos.col = self.next_col;
                 self.pos.index = index;
@@ -251,6 +410,13 @@ impl<'a> Parser<'a> {
                     self.next_col = 1;
                 } else {
                     self.next_col += 1;
+                }
+                match c {
+                    '\n' => {
+                        self.line_breaks += 1;
+                    }
+                    ' ' | '\t' | '\r' => {}
+                    _ => self.line_breaks = 0,
                 }
                 self.current_char = c;
                 Some(c)
@@ -267,7 +433,7 @@ impl<'a> Parser<'a> {
     fn peek(&mut self) -> Option<char> {
         match self.iter.peek() {
             None => None,
-            Some((_, ch)) => Some(*ch)
+            Some((_, ch)) => Some(*ch),
         }
     }
 
@@ -278,113 +444,195 @@ impl<'a> Parser<'a> {
             self.next = Token::None;
             return Ok(());
         }
+        self.mark_line_breaks = self.line_breaks;
         match self.advance() {
             None => self.set_token(Token::EOF),
             Some(ch) => {
                 match ch {
-                    ' ' | '\t' | '\r' => self.skip_whitespace(),
+                    ' ' | '\t' | '\r' => loop {
+                        self.mark(Token::Whitespace);
+                        match self.peek() {
+                            Some(c) => match c {
+                                ' ' | '\t' | '\r' => {
+                                    self.advance();
+                                }
+                                _ => return Ok(()),
+                            },
+                            None => return Ok(()),
+                        }
+                    },
                     '\n' => self.set_token(Token::NewLine),
-                    '"' => self.set_token(Token::DoubleQuote),
-                    '\'' => self.set_token(Token::SingleQuote),
-                    '?' => self.set_token(Token::QuestionMark),
-                    '{' => self.set_token(Token::CurlyOpen),
-                    '/' => match self.peek() {
-                        Some(ch) => match ch {
-                            '/' => {
-                                self.set_token(Token::Comment);
-                                self.expect_next_char()?;
-                                Ok(())
-                            }
-                            '*' => {
-                                // Multi line
-                                self.set_token(Token::CommentMulti);
-                                self.expect_next_char()?;
-                                Ok(())
-                            }
-                            _ => {
-                                self.set_token(Token::ForwardSlash)
+                    '\'' => {
+                        self.mark(Token::SingleQuote);
+                        loop {
+                            match self.expect_next_char()? {
+                                '\'' => return Ok(()),
+                                _ => {}
                             }
                         }
-                        None => self.set_token(Token::ForwardSlash)
+                    }
+                    '"' => {
+                        self.mark(Token::DoubleQuote);
+                        loop {
+                            match self.expect_next_char()? {
+                                '"' => return Ok(()),
+                                _ => {}
+                            }
+                        }
+                    }
+                    '?' => self.set_token(Token::QuestionMark),
+                    // '!' => self.set_token(Token::QuestionMark),
+                    '[' => self.set_token(Token::BracketOpen),
+                    ']' => self.set_token(Token::BracketClose),
+                    '{' => self.set_token(Token::CurlyOpen),
+                    '}' => self.set_token(Token::CurlyClose),
+                    ',' => self.set_token(Token::Comma),
+                    '/' => {
+                        self.mark(Token::ForwardSlash);
+                        match self.peek() {
+                            Some(ch) => match ch {
+                                '/' => {
+                                    self.token = Token::LineComment;
+                                    self.advance();
+                                    loop {
+                                        match self.advance() {
+                                            None => {
+                                                self.comments.push(
+                                                    false,
+                                                    self.mark,
+                                                    self.pos,
+                                                    self.contents[self.mark.index..=self.pos.index]
+                                                        .trim(),
+                                                );
+                                                return Ok(());
+                                            }
+                                            Some(ch) => match ch {
+                                                '\n' => {
+                                                    self.comments.push(
+                                                        false,
+                                                        self.mark,
+                                                        self.pos,
+                                                        self.contents
+                                                            [self.mark.index..=self.pos.index]
+                                                            .trim(),
+                                                    );
+                                                    return Ok(());
+                                                }
+                                                _ => {}
+                                            },
+                                        }
+                                    }
+                                }
+                                '*' => {
+                                    self.token = Token::BlockComment;
+                                    self.advance();
+                                    loop {
+                                        match self.expect_next_char()? {
+                                            '\n' => {
+                                                self.comments.push(
+                                                    true,
+                                                    self.mark,
+                                                    self.pos,
+                                                    self.contents[self.mark.index..=self.pos.index]
+                                                        .trim(),
+                                                );
+                                                self.mark = self.pos;
+                                            }
+                                            '*' => {
+                                                let end = self.pos;
+                                                match self.expect_next_char()? {
+                                                    '/' => {
+                                                        self.comments.push(
+                                                            true,
+                                                            self.mark,
+                                                            end,
+                                                            self.contents
+                                                                [self.mark.index..=self.pos.index]
+                                                                .trim(),
+                                                        );
+                                                        return Ok(());
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                _ => self.set_token(Token::ForwardSlash),
+                            },
+                            None => self.set_token(Token::ForwardSlash),
+                        }
                     }
                     '|' => self.set_token(Token::Or),
-                    ':' => match self.peek() {
-                        Some(ch) => match ch {
-                            ':' => {
-                                self.expect_next_char()?;
-                                self.set_token(Token::ColonColon)
-                            }
-                            _ => {
-                                self.set_token(Token::Colon)
-                            }
+                    ':' => {
+                        self.mark(Token::Colon);
+                        match self.peek() {
+                            Some(ch) => match ch {
+                                ':' => {
+                                    self.advance();
+                                    self.token = Token::ColonColon;
+                                    Ok(())
+                                }
+                                _ => self.set_token(Token::Colon),
+                            },
+                            None => self.set_token(Token::Colon),
                         }
-                        None => self.set_token(Token::Colon)
-                    },
+                    }
+                    ';' => self.set_token(Token::Semicolon),
                     '+' => self.set_token(Token::Plus),
                     '-' => match self.peek() {
                         Some(ch) => match ch {
-                            '.' | '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
-                                self.parse_numeral()
-                            }
-                            _ => {
-                                self.set_token(Token::Minus)
-                            }
-                        }
-                        None => self.set_token(Token::Minus)
+                            '.' | '0'..='9' => self.parse_numeral(),
+                            _ => self.set_token(Token::Minus),
+                        },
+                        None => self.set_token(Token::Minus),
                     },
-                    '.' => match self.peek() {
-                        Some(ch) => match ch {
-                            '.' => {
-                                self.set_token(Token::DotDot);
-                                self.expect_next_char()?;
-                                Ok(())
-                            }
-                            '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
-                                self.parse_numeral()
-                            }
-                            _ => {
-                                self.set_token(Token::Period)
+                    '.' => {
+                        self.mark(Token::Period);
+                        match self.peek() {
+                            Some(ch) => match ch {
+                                '.' => {
+                                    self.advance();
+                                    self.token = Token::DotDot;
+                                    Ok(())
+                                }
+                                '0'..='9' => self.parse_numeral(),
+                                _ => self.set_token(Token::Period),
+                            },
+                            None => self.set_token(Token::Period),
+                        }
+                    }
+                    '0'..='9' => self.parse_numeral(),
+                    'a'..='z' | 'A'..='Z' | '_' => {
+                        self.mark(Token::Word);
+                        loop {
+                            match self.peek() {
+                                None => return self.unexpected_eof(),
+                                Some(ch) => match ch {
+                                    '0'..='9' | 'a'..='z' | 'A'..='Z' | '_' => {
+                                        self.advance();
+                                    }
+                                    ':' => match self.peek() {
+                                        Some(':') => {
+                                            self.advance();
+                                            self.advance();
+                                            self.token = Token::QualifiedName;
+                                        }
+                                        Some(_) => return Ok(()),
+                                        None => return Ok(()),
+                                    },
+                                    _ => return Ok(()),
+                                },
                             }
                         }
-                        None => self.set_token(Token::Period)
-                    },
-                    '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' =>
-                        self.parse_numeral(),
-                    'a' | 'A' | 'b' | 'B' | 'c' | 'C' | 'd' | 'D' | 'e' | 'E' | 'f' |
-                    'F' | 'g' | 'G' | 'h' | 'H' | 'i' | 'I' | 'j' | 'J' | 'k' | 'K' |
-                    'l' | 'L' | 'm' | 'M' | 'n' | 'N' | 'o' | 'O' | 'p' | 'P' | 'q' |
-                    'r' | 'R' | 's' | 'S' | 't' | 'T' | 'u' | 'U' | 'v' | 'V' | 'w' |
-                    'W' | 'x' | 'X' | 'y' | 'Y' | 'z' | 'Z' | '_' =>
-                        match self.parse_word() {
-                            Ok(result) => {
-                                Ok(())
-                            }
-                            Err(reason) => {
-                                Err(reason)
-                            }
-                        }
+                    }
 
                     _ => Err(anyhow::Error::msg(ParseError::InvalidCharacter {
                         token: self.token_span(),
                         character: self.current_char,
-                    }))
+                    })),
                 }
-            }
-        }
-    }
-
-    fn skip_whitespace(&mut self) -> anyhow::Result<()> {
-        self.mark = self.pos;
-
-        loop {
-            match self.peek() {
-                Some(ch) => match ch {
-                    ' ' | '\t' | '\r' => {
-                        self.expect_next_char()?;
-                    }
-                    _ => return Ok(())
-                }
-                None => return Ok(())
             }
         }
     }
@@ -394,14 +642,12 @@ impl<'a> Parser<'a> {
             self.token,
             self.mark,
             self.pos,
-            self.contents[self.mark.index..self.pos.index].to_owned())
+            self.contents[self.current_line_index..=self.pos.index].to_owned(),
+        )
     }
 
     fn token_position(&mut self) -> TokenPosition {
-        TokenPosition::new(
-            self.token,
-            self.mark,
-            self.pos)
+        TokenPosition::new(self.token, self.mark, self.pos)
     }
 
     fn word(&self) -> &'a str {
@@ -411,41 +657,71 @@ impl<'a> Parser<'a> {
     fn expect_next_char(&mut self) -> anyhow::Result<char> {
         match self.advance() {
             None => Err(anyhow::Error::msg(ParseError::UnexpectedEOF {
-                token: self.token_span()
+                token: self.token_span(),
             })),
-            Some(ch) => Ok(ch)
+            Some(ch) => Ok(ch),
         }
     }
 
     fn expect_next(&mut self) -> anyhow::Result<Token> {
         self.next()?;
-        Ok(self.token)
+        if self.token == Token::EOF {
+            Err(anyhow::Error::msg(ParseError::UnexpectedEOF {
+                token: self.token_span(),
+            }))
+        } else {
+            Ok(self.token)
+        }
+    }
+
+    fn expect_next_token(&mut self, token: Token) -> anyhow::Result<()> {
+        match self.expect_next()? {
+            t if t == token => Ok(()),
+            _ => self.err_expected_token(token),
+        }
+    }
+
+    fn expect_next_token_any(&mut self, expected: Vec<Token>) -> anyhow::Result<Token> {
+        match self.expect_next()? {
+            t if expected.contains(&t) => Ok(t),
+            _ => Err(anyhow::Error::msg(ParseError::ExpectedOneOf {
+                one_of: expected,
+                found: self.token_span(),
+            })),
+        }
     }
 
     fn unexpected_eof(&mut self) -> anyhow::Result<()> {
         Err(anyhow::Error::msg(ParseError::UnexpectedEOF {
-            token: self.token_span()
+            token: self.token_span(),
         }))
     }
 
     fn err_expected_token(&mut self, expected: Token) -> anyhow::Result<()> {
         Err(anyhow::Error::msg(ParseError::Expected {
             expected,
-            found: self.token_position(),
+            found: self.token_span(),
         }))
     }
 
     fn err_expected_token_one_of(&mut self, one_of: Vec<Token>) -> anyhow::Result<()> {
         Err(anyhow::Error::msg(ParseError::ExpectedOneOf {
             one_of,
-            found: self.token_position(),
+            found: self.token_span(),
+        }))
+    }
+
+    fn err_token_one_of<T>(&mut self, one_of: Vec<Token>) -> anyhow::Result<T> {
+        Err(anyhow::Error::msg(ParseError::ExpectedOneOf {
+            one_of,
+            found: self.token_span(),
         }))
     }
 
     fn expect_token(&mut self, token: Token) -> anyhow::Result<()> {
         if self.token != token {
             Err(anyhow::Error::msg(ParseError::Expected {
-                found: self.token_position(),
+                found: self.token_span(),
                 expected: token,
             }))
         } else {
@@ -458,28 +734,6 @@ impl<'a> Parser<'a> {
         self.token = token;
     }
 
-    fn parse_word(&mut self) -> anyhow::Result<()> {
-        self.mark(Token::Word);
-        loop {
-            match self.peek() {
-                None => return self.unexpected_eof(),
-                Some(ch) => {
-                    match ch {
-                        '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' |
-                        'a' | 'A' | 'b' | 'B' | 'c' | 'C' | 'd' | 'D' | 'e' | 'E' | 'f' |
-                        'F' | 'g' | 'G' | 'h' | 'H' | 'i' | 'I' | 'j' | 'J' | 'k' | 'K' |
-                        'l' | 'L' | 'm' | 'M' | 'n' | 'N' | 'o' | 'O' | 'p' | 'P' | 'q' |
-                        'r' | 'R' | 's' | 'S' | 't' | 'T' | 'u' | 'U' | 'v' | 'V' | 'w' |
-                        'W' | 'x' | 'X' | 'y' | 'Y' | 'z' | 'Z' | '_' => {
-                            self.expect_next_char()?;
-                        }
-                        _ => return Ok(())
-                    }
-                }
-            }
-        }
-    }
-
     fn parse_numeral(&mut self) -> anyhow::Result<()> {
         self.mark(Token::Numeral);
 
@@ -489,21 +743,19 @@ impl<'a> Parser<'a> {
         loop {
             match self.peek() {
                 None => return self.unexpected_eof(),
-                Some(ch) => {
-                    match ch {
-                        '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
-                            self.expect_next_char()?;
-                        }
-                        '.' => {
-                            if is_float {
-                                return self.try_parse_numeral(is_float, is_signed);
-                            } else {
-                                is_float = true;
-                            }
-                        }
-                        _ => return self.try_parse_numeral(is_float, is_signed)
+                Some(ch) => match ch {
+                    '0'..='9' => {
+                        self.expect_next_char()?;
                     }
-                }
+                    '.' => {
+                        if is_float {
+                            return self.try_parse_numeral(is_float, is_signed);
+                        } else {
+                            is_float = true;
+                        }
+                    }
+                    _ => return self.try_parse_numeral(is_float, is_signed),
+                },
             }
         }
     }
@@ -517,11 +769,10 @@ impl<'a> Parser<'a> {
                     self.numeral = Some(Numeral::Float { text, value });
                     Ok(())
                 }
-                Err(err) => Err(anyhow::Error::msg(
-                    ParseError::BadNumeral {
-                        token: self.token_span(),
-                        reason: err.to_string(),
-                    }))
+                Err(err) => Err(anyhow::Error::msg(ParseError::BadNumeral {
+                    token: self.token_span(),
+                    reason: err.to_string(),
+                })),
             }
         } else if is_signed {
             match i128::from_str(text) {
@@ -529,11 +780,10 @@ impl<'a> Parser<'a> {
                     self.numeral = Some(Numeral::Int { text, value });
                     Ok(())
                 }
-                Err(err) => Err(anyhow::Error::msg(
-                    ParseError::BadNumeral {
-                        token: self.token_span(),
-                        reason: err.to_string(),
-                    }))
+                Err(err) => Err(anyhow::Error::msg(ParseError::BadNumeral {
+                    token: self.token_span(),
+                    reason: err.to_string(),
+                })),
             }
         } else {
             match u128::from_str(text) {
@@ -541,68 +791,10 @@ impl<'a> Parser<'a> {
                     self.numeral = Some(Numeral::UInt { text, value });
                     Ok(())
                 }
-                Err(err) => Err(anyhow::Error::msg(
-                    ParseError::BadNumeral {
-                        token: self.token_span(),
-                        reason: err.to_string(),
-                    }))
-            }
-        }
-    }
-
-    fn parse_comment(&mut self) -> anyhow::Result<()> {
-        self.expect_token(Token::Comment)?;
-        loop {
-            match self.advance() {
-                None => {
-                    self.comments.push(
-                        false,
-                        self.mark,
-                        self.pos,
-                        self.contents[self.mark.index..=self.pos.index].trim());
-                    return self.set_token(Token::EOF);
-                }
-                Some(ch) => match ch {
-                    '\n' => {
-                        self.comments.push(
-                            false,
-                            self.mark,
-                            self.pos,
-                            self.contents[self.mark.index..=self.pos.index].trim());
-                        return Ok(());
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    fn parse_comment_multiline(&mut self) -> anyhow::Result<()> {
-        self.expect_token(Token::CommentMulti)?;
-        loop {
-            match self.expect_next_char()? {
-                '\n' => {
-                    self.comments.push(true,
-                                       self.mark,
-                                       self.pos,
-                                       self.contents[self.mark.index..=self.pos.index].trim());
-                    self.mark = self.pos;
-                }
-                '*' => {
-                    let end = self.pos;
-                    match self.expect_next_char()? {
-                        '/' => {
-                            self.comments.push(
-                                true,
-                                self.mark,
-                                end,
-                                self.contents[self.mark.index..=self.pos.index].trim());
-                            return Ok(());
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
+                Err(err) => Err(anyhow::Error::msg(ParseError::BadNumeral {
+                    token: self.token_span(),
+                    reason: err.to_string(),
+                })),
             }
         }
     }
@@ -611,28 +803,27 @@ impl<'a> Parser<'a> {
         loop {
             match match self.next() {
                 Ok(_) => self.token,
-                Err(reason) => return Err(reason)
+                Err(reason) => return Err(reason),
             } {
                 Token::EOF => return Ok(()),
-                Token::NewLine => {}
-                Token::Comment => {
-                    self.parse_comment()?;
-                }
-                Token::CommentMulti => {
-                    self.parse_comment_multiline()?;
-                }
+                Token::NewLine | Token::Whitespace => {}
+                Token::LineComment => {}
+                Token::BlockComment => {}
                 Token::Word => {
-                    match self.word() {
+                    let text = self.word();
+                    match text {
                         "mod" | "module" | "namespace" => self.parse_mod()?,
                         "import" => {}
-                        "type" | "using" => self.parse_alias()?,
+                        "type" | "using" | "alias" => self.parse_alias()?,
                         "const" => self.parse_const()?,
                         "enum" => self.parse_enum()?,
 
                         "struct" => {
-                            self.expect_next_token(Token::Word)?;
+                            self.consume_non_essential()?;
+                            self.expect_token(Token::Word)?;
                             let s = self.module_mut(|m| m.new_struct());
                             s.set_name(self.word().to_owned());
+                            self.expect_curly_open()?;
                             self.visit_struct(s)?;
                         }
                         _ => {}
@@ -640,8 +831,8 @@ impl<'a> Parser<'a> {
                 }
                 _ => {
                     return self.err_expected_token_one_of(vec![
-                        Token::Comment,
-                        Token::CommentMulti,
+                        Token::LineComment,
+                        Token::BlockComment,
                         Token::NewLine,
                         Token::EOF,
                     ]);
@@ -650,58 +841,104 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_mod(&mut self) -> anyhow::Result<()> {
-        self.expect_next()?;
-        let start = self.pos;
-        let mut prev = self.token;
-        let mut end = start;
+    fn consume_non_essential(&mut self) -> anyhow::Result<Token> {
         loop {
-            match self.token {
-                Token::Word => {
-                    prev = Token::Word;
-                    end = self.pos;
-                    end.index += self.word().len();
-                }
-                Token::ColonColon => {
-                    if prev != Token::Word {
-                        return self.err_expected_token(Token::Word);
-                    }
-                    prev = Token::ColonColon;
-                }
-                Token::NewLine | Token::Comment | Token::CommentMulti | Token::EOF => {
-                    // done
-                    if prev == Token::ColonColon {
-                        return self.err_expected_token(Token::Word);
-                    }
-                    self.module_mut(|m| {
-                        m.full = self.contents[start.index..end.index].trim().to_owned();
-                    });
-
-                    match self.token {
-                        Token::NewLine | Token::EOF => return Ok(()),
-                        Token::Comment => return self.parse_comment(),
-                        Token::CommentMulti => return self.parse_comment_multiline(),
-                        _ => unreachable!()
-                    }
-                }
-                _ => return self.err_expected_token_one_of(vec![
-                    Token::Word,
-                    Token::ColonColon,
-                ])
+            match self.expect_next()? {
+                Token::Whitespace | Token::NewLine | Token::LineComment | Token::BlockComment => {}
+                _ => return Ok(self.token),
             }
-            self.next()?;
         }
     }
 
-    fn parse_alias(&mut self) -> anyhow::Result<()> {
-        self.expect_next_token(Token::Word)?;
-        let name = self.word();
+    fn expect_curly_open(&mut self) -> anyhow::Result<Token> {
+        let mut new_line_count = 0;
+        loop {
+            match self.expect_next()? {
+                Token::NewLine => {
+                    new_line_count += 1;
+                    if new_line_count > 1 {
+                        self.expect_token(Token::CurlyOpen)?;
+                    }
+                }
+                Token::Whitespace => {}
+                Token::LineComment | Token::BlockComment => {}
+                Token::CurlyOpen => {
+                    self.consume_non_essential()?;
+                    return Ok(self.token);
+                }
+                _ => {
+                    return Err(anyhow::Error::msg(ParseError::Expected {
+                        expected: Token::CurlyOpen,
+                        found: self.token_span(),
+                    }))
+                }
+            }
+        }
+    }
 
+    fn finish_line(&mut self) -> anyhow::Result<()> {
+        loop {
+            self.next()?;
+            match self.token {
+                Token::Whitespace => {}
+                Token::NewLine => return Ok(()),
+                Token::LineComment => return Ok(()),
+                _ => {
+                    return self.err_expected_token_one_of(vec![
+                        Token::Whitespace,
+                        Token::NewLine,
+                        Token::LineComment,
+                    ])
+                }
+            }
+        }
+    }
 
+    fn parse_mod(&mut self) -> anyhow::Result<()> {
+        self.expect_next_token(Token::Whitespace)?;
+        match self.expect_next()? {
+            Token::Word | Token::QualifiedName => {
+                self.module.full_name = self.word().to_owned();
+            }
+            _ => return self.err_expected_token_one_of(vec![Token::Word, Token::ColonColon]),
+        }
+        loop {
+            self.next()?;
+            match self.token {
+                Token::Whitespace => {}
+                Token::NewLine => return Ok(()),
+                Token::LineComment => return Ok(()),
+                Token::EOF => return Ok(()),
+                _ => {
+                    return self.err_expected_token_one_of(vec![
+                        Token::Whitespace,
+                        Token::NewLine,
+                        Token::LineComment,
+                        Token::EOF,
+                    ])
+                }
+            }
+        }
         Ok(())
     }
 
-    fn parse_struct(&mut self) -> anyhow::Result<()> {
+    fn parse_alias(&mut self) -> anyhow::Result<()> {
+        self.consume_non_essential()?;
+        self.expect_token(Token::Word)?;
+
+        let name = self.word();
+        let alias = self.module_mut(|m| m.new_alias(name, None));
+
+        self.consume_non_essential()?;
+        if self.token == Token::Equals {
+            self.expect_next()?;
+            self.consume_non_essential()?;
+        }
+
+        // let alias = self.module.new_alias(name, None);
+        let of = self.parse_type(alias.this_mut())?;
+        alias.set_of(Some(of));
+
         Ok(())
     }
 
@@ -726,17 +963,12 @@ impl<'a> Parser<'a> {
     }
 
     fn visit_struct(&mut self, s: &mut Struct<'a>) -> anyhow::Result<()> {
-        // struct <NAME>
-        self.expect_next_token(Token::Word)?;
-        s.set_name(self.word().to_owned());
-
-        // struct <NAME> {
-        self.expect_next_token(Token::CurlyOpen)?;
+        if self.token == Token::CurlyClose {
+            return Ok(());
+        }
 
         'field_loop: loop {
-            let mark = self.mark;
-
-            let field_number = match self.consume_comments()? {
+            let field_number = match self.token {
                 Token::CurlyClose => return Ok(()),
 
                 Token::At => {
@@ -752,16 +984,16 @@ impl<'a> Parser<'a> {
                     num
                 }
 
-                Token::Word => -1i32,
+                Token::Word => 0usize,
 
-                _ => return self.err_expected_token_one_of(
-                    vec![
+                _ => {
+                    return self.err_expected_token_one_of(vec![
                         Token::CurlyClose,
                         Token::At,
                         Token::Numeral,
                         Token::Word,
-                    ]
-                )
+                    ])
+                }
             };
 
             self.consume_comments()?;
@@ -795,101 +1027,212 @@ impl<'a> Parser<'a> {
             match self.expect_next()? {
                 Token::At => {
                     // Was field number not set?
-                    if field_number > -1 {}
+                    if field_number > 0 {}
                 }
                 Token::Or => {}
                 _ => {}
             }
 
-            if field_number == -1 {}
+            if field_number == 0 {}
         }
-    }
-
-    fn visit_union(&mut self, u: &mut Union<'a>) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn visit_variant(&mut self, u: &mut Variant<'a>) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn parse_variant(&mut self) -> anyhow::Result<()> {
-        Ok(())
     }
 
     fn parse_type(&mut self, parent: &'a mut Type<'a>) -> anyhow::Result<&'a Type<'a>> {
-        self.consume_comments()?;
-        match self.token {
-            Token::QuestionMark => {}
+        let is_const = parent.is_const();
+        let is_alias = parent.is_alias();
+        let is_field = parent.is_field();
+        let is_root = parent.is_module();
 
-            Token::Star => {}
+        // self.consume_non_essential()?;
+        let new_type = match self.token {
+            Token::QuestionMark => {
+                self.expect_next()?;
+                let optional = parent.new_optional(None);
+                let child = self.parse_type(optional.this_mut())?;
+                optional.set_of(Some(child));
+                optional.this_mut()
+            }
 
-            Token::BracketOpen => {}
+            Token::Star => {
+                self.expect_next()?;
+                let pointer = parent.new_pointer(None);
+                let child = self.parse_type(pointer.this_mut())?;
+                pointer.set_of(Some(child));
+                pointer.this_mut()
+            }
+
+            Token::BracketOpen => {
+                match self.expect_next()? {
+                    // array
+                    Token::Numeral => {
+                        let size = self.expect_positive_int()?;
+                        match self.expect_next()? {
+                            Token::BracketClose => {
+                                let new_type = parent.new_array(size);
+                                self.consume_non_essential()?;
+                                let child = self.parse_type(new_type.this_mut())?;
+                                new_type.set_element(Some(child));
+                                new_type.this_mut()
+                            }
+                            Token::DotDot => {
+                                self.expect_next_token(Token::BracketClose)?;
+                                let new_type = parent.new_array_vector(size);
+                                self.consume_non_essential()?;
+                                let child = self.parse_type(new_type.this_mut())?;
+                                new_type.set_element(Some(child));
+                                new_type.this_mut()
+                            }
+                            _ => {
+                                return self
+                                    .err_token_one_of(vec![Token::Numeral, Token::BracketClose])
+                            }
+                        }
+                    }
+                    // vector
+                    Token::BracketClose => {
+                        let new_type = parent.new_vector();
+                        self.consume_non_essential()?;
+                        let child = self.parse_type(new_type.this_mut())?;
+                        new_type.set_element(Some(child));
+                        new_type.this_mut()
+                    }
+                    _ => return self.err_token_one_of(vec![Token::Numeral, Token::BracketClose]),
+                }
+            }
+
+            Token::QualifiedName => {
+                // user-defined
+                parent.new_unknown(Some(self.word().to_owned())).this_mut()
+            }
 
             Token::Word => {
                 let name = self.word();
-                match name {
-                    "bool" => {
-                        return Ok(parent.new_bool());
-                    }
-                    "i8" => {}
-                    "i16" | "i16l" => {}
-                    "i16b" => {}
-                    "i16n" => {}
-                    "i32" | "i32l" => {}
-                    "i32b" => {}
-                    "i32n" => {}
-                    "i64" | "i64l" => {}
-                    "i64b" => {}
-                    "i64n" => {}
-                    "i128" | "i128l" => {}
-                    "i128b" => {}
-                    "i128n" => {}
-                    "u8" => {}
-                    "u16" | "u16l" => {}
-                    "u16b" => {}
-                    "u16n" => {}
-                    "u32" | "u32l" => {}
-                    "u32b" => {}
-                    "u32n" => {}
-                    "u64" | "u64l" => {}
-                    "u64b" => {}
-                    "u64n" => {}
-                    "u128" | "u128l" => {}
-                    "u128b" => {}
-                    "u128n" => {}
-                    "f32" | "f32l" => {}
-                    "f32b" => {}
-                    "f32n" => {}
-                    "f64" | "f64l" => {}
-                    "f64b" => {}
-                    "f64n" => {}
+                let new_type = match name {
+                    "bool" => parent.new_bool(),
+                    "i8" => parent.new_i8(),
+                    "i16" | "i16l" => parent.new_i16(Endian::Little).this_mut(),
+                    "i16b" => parent.new_i16(Endian::Big).this_mut(),
+                    "i16n" => parent.new_i16(Endian::Native).this_mut(),
+                    "i32" | "i32l" => parent.new_i32(Endian::Little).this_mut(),
+                    "i32b" => parent.new_i32(Endian::Big).this_mut(),
+                    "i32n" => parent.new_i32(Endian::Native).this_mut(),
+                    "i64" | "i64l" => parent.new_i64(Endian::Little).this_mut(),
+                    "i64b" => parent.new_i64(Endian::Big).this_mut(),
+                    "i64n" => parent.new_i64(Endian::Native).this_mut(),
+                    "i128" | "i128l" => parent.new_i128(Endian::Little).this_mut(),
+                    "i128b" => parent.new_i128(Endian::Big).this_mut(),
+                    "i128n" => parent.new_i128(Endian::Native).this_mut(),
+                    "u8" => parent.new_u8(),
+                    "u16" | "u16l" => parent.new_u16(Endian::Little).this_mut(),
+                    "u16b" => parent.new_u16(Endian::Big).this_mut(),
+                    "u16n" => parent.new_u16(Endian::Native).this_mut(),
+                    "u32" | "u32l" => parent.new_u32(Endian::Little).this_mut(),
+                    "u32b" => parent.new_u32(Endian::Big).this_mut(),
+                    "u32n" => parent.new_u32(Endian::Native).this_mut(),
+                    "u64" | "u64l" => parent.new_u64(Endian::Little).this_mut(),
+                    "u64b" => parent.new_u64(Endian::Big).this_mut(),
+                    "u64n" => parent.new_u64(Endian::Native).this_mut(),
+                    "u128" | "u128l" => parent.new_u128(Endian::Little).this_mut(),
+                    "u128b" => parent.new_u128(Endian::Big).this_mut(),
+                    "u128n" => parent.new_u128(Endian::Native).this_mut(),
+                    "f32" | "f32l" => parent.new_f32(Endian::Little).this_mut(),
+                    "f32b" => parent.new_f32(Endian::Big).this_mut(),
+                    "f32n" => parent.new_f32(Endian::Native).this_mut(),
+                    "f64" | "f64l" => parent.new_f64(Endian::Little).this_mut(),
+                    "f64b" => parent.new_f64(Endian::Big).this_mut(),
+                    "f64n" => parent.new_f64(Endian::Native).this_mut(),
 
-                    "map" | "flat_map" => {}
-                    "set" | "flat_set" => {}
-
-                    "string" => {}
-                    "struct" => {}
-                    "union" => {}
-                    "variant" => {}
-                    "enum" => {}
-
+                    // "map" | "flat_map" => {}
+                    // "set" | "flat_set" => {}
+                    //
+                    // "struct" => {
+                    //     // consts cannot inline declare a struct
+                    //     if parent.is_const() {
+                    //
+                    //     }
+                    //     // inline declared struct
+                    // }
+                    // "union" => {}
+                    // "variant" => {}
+                    // "enum" => {
+                    //     if parent.is_const() {
+                    //
+                    //     }
+                    // }
                     _ => {
-                        // user-defined
+                        if name.starts_with("string") {
+                            if name == "string" {
+                                parent.new_string().this_mut()
+                            } else {
+                                let size_str = &name[6..];
+                                match usize::from_str(size_str) {
+                                    Ok(size) => {
+                                        match self.peek() {
+                                            Some('.') => match self.peek() {
+                                                Some('.') => {
+                                                    self.expect_next_token(Token::DotDot)?;
+                                                    parent.new_string_inline_plus(size).this_mut()
+                                                }
+                                                Some(_) | None => parent.new_string_inline(size).this_mut()
+                                            }
+                                            Some(_) | None => parent.new_string_inline(size).this_mut()
+                                        }
+                                    }
+                                    Err(_) => return Err(anyhow::Error::msg(ParseError::BadNumeral {
+                                        token: self.token_span(), reason: "expected a string length".to_owned() }))
+                                }
+                            }
+                        } else {
+                            // user-defined
+                            parent.new_unknown(Some(name.to_owned())).this_mut()
+                        }
                     }
+                };
+
+                if is_field {
+                    self.expect_next()?;
+                }
+
+                new_type
+            }
+            _ => {
+                return Err(anyhow::Error::msg(ParseError::ExpectedOneOf {
+                    one_of: vec![
+                        Token::QuestionMark,
+                        Token::Star,
+                        Token::BracketOpen,
+                        Token::Word,
+                    ],
+                    found: self.token_span(),
+                }))
+            }
+        };
+
+        if is_field {
+            loop {
+                match self.expect_next()? {
+                    Token::NewLine => {}
+                    Token::LineComment => {}
+                    Token::BlockComment => {}
+                    Token::Comma | Token::Semicolon => {
+                        self.expect_next()?;
+                        return Ok(new_type);
+                    }
+                    Token::Equals => {
+                        if !new_type.can_default() {
+                            return Err(anyhow::Error::msg(ParseError::VariantFieldDefault {
+                                token: self.token_position(),
+                            }));
+                        }
+                        self.expect_next()?;
+                    }
+                    Token::At | Token::Word | Token::Numeral => return Ok(new_type),
+                    _ => {}
                 }
             }
-            _ => return Err(anyhow::Error::msg(ParseError::ExpectedOneOf {
-                one_of: vec![
-                    Token::QuestionMark,
-                    Token::Star,
-                    Token::BracketOpen,
-                    Token::Word,
-                ],
-                found: self.token_position(),
-            }))
         }
-        Ok(parent)
+
+        Ok(new_type)
     }
 
     fn parse_value(&mut self) -> anyhow::Result<()> {
@@ -901,53 +1244,26 @@ impl<'a> Parser<'a> {
         loop {
             match token {
                 Token::NewLine => {}
-                Token::Comment => self.parse_comment()?,
-                Token::CommentMulti => self.parse_comment_multiline()?,
-                _ => return Ok(token)
+                Token::LineComment => {}
+                Token::BlockComment => {}
+                _ => return Ok(token),
             }
             token = self.expect_next()?;
         }
     }
 
-    fn expect_next_token(&mut self, token: Token) -> anyhow::Result<()> {
-        match self.expect_next()? {
-            t if t == token => Ok(()),
-            _ => self.err_expected_token(token)
-        }
-    }
-
-    fn expect_next_token_either(&mut self, t1: Token, t2: Token) -> anyhow::Result<Token> {
-        let t = self.expect_next()?;
-        if t == t1 || t == t2 {
-            Ok(t)
-        } else {
-            Err(anyhow::Error::msg(ParseError::ExpectedOneOf {
-                one_of: vec![t1, t2],
-                found: self.token_position(),
-            }))
-        }
-    }
-
-    fn expect_next_token_any(&mut self, expected: Vec<Token>) -> anyhow::Result<Token> {
-        match self.expect_next()? {
-            t if expected.contains(&t) => Ok(t),
-            _ => Err(anyhow::Error::msg(ParseError::ExpectedOneOf {
-                one_of: expected,
-                found: self.token_position(),
-            }))
-        }
-    }
-
-    fn expect_positive_int(&mut self) -> anyhow::Result<i32> {
+    fn expect_positive_int(&mut self) -> anyhow::Result<usize> {
         self.expect_token(Token::Numeral)?;
         match &self.numeral {
-            None => Ok(-1),
+            None => Ok(0),
             Some(v) => match v {
-                Numeral::Float { text, value } => Err(anyhow::Error::msg(ParseError::InvalidFieldNumber {
-                    reason: "cannot be a float",
-                    float: Some(*value),
-                    int: None,
-                })),
+                Numeral::Float { text, value } => {
+                    Err(anyhow::Error::msg(ParseError::InvalidFieldNumber {
+                        reason: "cannot be a float",
+                        float: Some(*value),
+                        int: None,
+                    }))
+                }
                 Numeral::Int { text, value } => {
                     if *value < 1 {
                         Err(anyhow::Error::msg(ParseError::InvalidFieldNumber {
@@ -956,7 +1272,7 @@ impl<'a> Parser<'a> {
                             int: Some(*value),
                         }))
                     } else {
-                        Ok(*value as i32)
+                        Ok(*value as usize)
                     }
                 }
                 Numeral::UInt { text, value } => {
@@ -967,10 +1283,10 @@ impl<'a> Parser<'a> {
                             int: Some(0),
                         }))
                     } else {
-                        Ok(*value as i32)
+                        Ok(*value as usize)
                     }
                 }
-            }
+            },
         }
     }
 }
@@ -1005,6 +1321,7 @@ mod tests {
         let mut m = Module::new();
 
         let s = m.new_struct();
+
         // let (mut t, o) = Type::new_struct(Some(String::from("Order")));
         //
         // Type::new_struct_fn(Some(String::from("Order")), |t, s| {
@@ -1018,15 +1335,16 @@ mod tests {
     #[test]
     fn parser() {
         // match std::fs::read_to_string("wapc/src/testdata/s.wap") {
-        // let file = std::env::current_dir().unwrap().to_str().unwrap();
-        // println!("{}", std::env::current_dir().unwrap().to_str().unwrap());
-        match std::fs::read_to_string(Path::new("src/testdata/s.wap")) {
-            Ok(s) => {
-                match Parser::parse(&s) {
-                    Ok(module) => {}
-                    Err(reason) => {}
+        let file = std::env::current_dir().unwrap().to_str().unwrap();
+        println!("{}", std::env::current_dir().unwrap().to_str().unwrap());
+        match std::fs::read_to_string(Path::new("wapc/src/testdata/s.wap")) {
+            Ok(s) => match Parser::parse(&s) {
+                Ok(_module) => {}
+                Err(reason) => {
+                    let err = reason.to_string();
+                    println!("{}", reason.to_string());
                 }
-            }
+            },
             Err(reason) => {
                 println!("{}", reason.to_string());
             }

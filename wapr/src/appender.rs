@@ -1,9 +1,7 @@
-use core::{mem, ptr};
+use core::ptr;
 use core::marker::PhantomData;
-use core::ops::{Deref, DerefMut};
 use core::ptr::null_mut;
 
-use crate::message;
 use crate::alloc::{Allocator, Doubled, Global, Grow, TruncResult};
 use crate::block::Block;
 use crate::header::Header;
@@ -87,7 +85,7 @@ impl<M, G, A> Builder for Appender<M, G, A>
         if new_capacity > Self::Block::SIZE_LIMIT {
             return TruncResult::Overflow;
         }
-        let existing_size = self.size();
+        // let _existing_size = self.size();
 
         // can't shrink
         if new_capacity < current_capacity {

@@ -1,3 +1,7 @@
+#[allow(unused)]
+#[allow(invalid_value)]
+#[allow(dead_code)]
+
 mod model;
 mod parser;
 mod linker;

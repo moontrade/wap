@@ -1,9 +1,3 @@
-#![feature(test)]
-// #![feature(bigint_helper_methods)]
-// #![allow(soft_unstable)]
-
-extern crate test;
-
 use std::mem;
 
 //
@@ -352,7 +346,7 @@ pub unsafe fn hash(data: *const u8, length: u64, seed: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use test::Bencher;
+    // use test::Bencher;
 
     fn print_hash(s: &str) {
         println!("{}: {}", s, s.hash_wap());
@@ -428,44 +422,44 @@ mod tests {
         print_hash("hellonow");
     }
 
-    #[bench]
-    fn bench_u64(b: &mut Bencher) {
-        let mut rand = Rand::new(DEFAULT_SEED);
+    // #[bench]
+    // fn bench_u64(b: &mut Bencher) {
+    //     let mut rand = Rand::new(DEFAULT_SEED);
 
-        // test::black_box(|| {
-        //     b.iter(|| {
-        //         "hello".wap_hash();
-        //     });
-        // });
+    //     // test::black_box(|| {
+    //     //     b.iter(|| {
+    //     //         "hello".wap_hash();
+    //     //     });
+    //     // });
 
-        test::black_box(hash);
-        test::black_box(hash_u8);
-        test::black_box(hash_u16);
-        test::black_box(hash_u32);
-        test::black_box(hash_u64);
+    //     test::black_box(hash);
+    //     test::black_box(hash_u8);
+    //     test::black_box(hash_u16);
+    //     test::black_box(hash_u32);
+    //     test::black_box(hash_u64);
 
-        b.iter(move || {
-            let mut h = 0;
-            for i in 1u64..10000u64 {
-                h += (i*i).hash_wap();
+    //     b.iter(move || {
+    //         let mut h = 0;
+    //         for i in 1u64..10000u64 {
+    //             h += (i*i).hash_wap();
 
-                // if i % 2 == 0 {
-                //
-                //     let v = "hello";
-                //     unsafe { hash(v.as_ptr(), v.len() as u64, DEFAULT_SEED); }
-                // } else {
-                //     let v = "hellp";
-                //     unsafe { hash(v.as_ptr(), v.len() as u64, DEFAULT_SEED); }
-                // }
-                // if i % 10 == 0 {
-                //     rand.next();
-                // }
-            }
-
-            if h < 10 {
-                rand.next();
-            }
-            // println!("{:}", h);
-        });
-    }
+    //             // if i % 2 == 0 {
+    //             //
+    //             //     let v = "hello";
+    //             //     unsafe { hash(v.as_ptr(), v.len() as u64, DEFAULT_SEED); }
+    //             // } else {
+    //             //     let v = "hellp";
+    //             //     unsafe { hash(v.as_ptr(), v.len() as u64, DEFAULT_SEED); }
+    //             // }
+    //             // if i % 10 == 0 {
+    //             //     rand.next();
+    //             // }
+    //         }
+    // 
+    //         if h < 10 {
+    //             rand.next();
+    //         }
+    //         // println!("{:}", h);
+    //     });
+    // }
 }

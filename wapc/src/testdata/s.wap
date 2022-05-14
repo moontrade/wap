@@ -30,7 +30,9 @@ Another line
 
 // Schema evolution .lock file to prevent catastrophic evolution deployment failures
 
-namespace wap::model // some comment
+mod wap::model // some comment
+
+type str string
 
 /*
 import other "other.wap"
@@ -44,7 +46,8 @@ const MAP str_float_map = [
 ]
 */
 
-struct Price {
+struct Price
+    // open price
     open f64; high ?f64, low f64;
     close f64
 }
@@ -58,8 +61,8 @@ struct Order {
     @1 id   i32b    = 10 // 32bit signed big endian
     @2 cost f64     = MAX /* test */
 
-    @11 code enum : i32 {
-        CREATE = 0
+    @11 code  enum : i32 {
+        Create = 0
     }
 
     @20 code enum : i32 { Create = 0, Update = 1 }
@@ -101,7 +104,7 @@ struct Order {
     9 values_vector    []*Value     // always a pointer
 
     name string8..
-    slab [8]byte..
+    slab [8..]byte
 
     enum Code : i32 {
         SUCCESS = 0
@@ -122,8 +125,9 @@ variant String {
 }
 
 enum String {
-    string15
-    string
+    Order {}
+    OrderPointer *Order
+    String string
 }
 
 // variant is a type-safe union

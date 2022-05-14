@@ -1,7 +1,3 @@
-use std::marker::PhantomData;
-use std::mem::ManuallyDrop;
-use std::ptr;
-
 pub trait Block {
     type Size;
 

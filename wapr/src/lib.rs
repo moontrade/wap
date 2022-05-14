@@ -1,6 +1,6 @@
-#![feature(test)]
-#![feature(trait_alias)]
-#![feature(type_alias_impl_trait)]
+// #![feature(test)]
+// #![feature(trait_alias)]
+// #![feature(type_alias_impl_trait)]
 
 mod alloc;
 pub mod hash;
@@ -13,6 +13,7 @@ mod vector;
 mod map;
 mod string;
 mod data;
+mod art;
 
 #[cfg(test)]
 mod tests {

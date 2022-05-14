@@ -3,10 +3,9 @@ use core::mem;
 use core::ops::{Deref, DerefMut};
 use core::ptr;
 
-use crate::{appender, block, hash};
 use crate::alloc::{Allocator, Global, Grow, TruncResult};
-use crate::block::{Block, Block16};
-use crate::header::{Fixed16, Header, Header16};
+use crate::block::Block;
+use crate::header::Header;
 
 pub trait Root {
     fn new(base: *const u8) -> Self;
@@ -173,7 +172,7 @@ pub trait Builder: Sized {
 //     }
 // }
 
-pub struct Slice<'a, B>(B, PhantomData<(&'a ())>);
+pub struct Slice<'a, B>(B, PhantomData<&'a ()>);
 
 impl<'a, B> Deref for Slice<'a, B> {
     type Target = B;
@@ -184,7 +183,7 @@ impl<'a, B> Deref for Slice<'a, B> {
     }
 }
 
-pub struct SliceMut<'a, B>(B, PhantomData<(&'a mut ())>);
+pub struct SliceMut<'a, B>(B, PhantomData<&'a mut ()>);
 
 impl<'a, B> Deref for SliceMut<'a, B> {
     type Target = B;

@@ -9,3 +9,13 @@ crate-type = ["dylib", "rlib"]
 path = "src/lib.rs"
 
 [dependencies]
+
+
+[dev-dependencies]
+rand = "0.8.4"
+criterion = "0.3.4"
+
+[[bench]]
+name = "art_bench"
+path = "benches/art_bench.rs"
+harness = false

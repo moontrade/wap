@@ -1,5 +1,3 @@
-#![feature(test)]
-
 extern crate wee_alloc;
 extern crate wapr;
 
@@ -13,7 +11,6 @@ use std::alloc::{alloc, dealloc, GlobalAlloc, Layout};
 use std::future::Future;
 use wapr::hash;
 use futures::executor::block_on;
-
 
 
 // Use `wee_alloc` as the global allocator.
