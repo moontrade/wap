@@ -1337,7 +1337,7 @@ mod tests {
         // match std::fs::read_to_string("wapc/src/testdata/s.wap") {
         let file = std::env::current_dir().unwrap().to_str().unwrap();
         println!("{}", std::env::current_dir().unwrap().to_str().unwrap());
-        match std::fs::read_to_string(Path::new("src/testdata/s.wap")) {
+        match std::fs::read_to_string(Path::new("wapc/src/testdata/s.wap")) {
             Ok(s) => match Parser::parse(&s) {
                 Ok(_module) => {}
                 Err(reason) => {
