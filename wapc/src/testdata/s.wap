@@ -46,7 +46,18 @@ const MAP str_float_map = [
 ]
 */
 
-struct Price
+
+struct Bar {
+    time u64
+    open f32
+    high f32
+    low f32
+    close f32
+    vol_up f32
+    vol_dn f32
+}
+
+struct Price {
     // open price
     open f64; high ?f64, low f64;
     close f64

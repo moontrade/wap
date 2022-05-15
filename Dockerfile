@@ -33,6 +33,6 @@ RUN apt-get update && \
 
 # install toolchain
 RUN curl https://sh.rustup.rs -sSf | \
-    sh -s -- --default-toolchain stable -y
+    sh -s -- --default-toolchain nightly -y
 
 ENV PATH=/root/.cargo/bin:$PATH
