@@ -281,7 +281,7 @@ func BenchmarkAllocator_Alloc(b *testing.B) {
 	//	after()
 	//})
 	b.Run("tlsf Heap alloc", func(b *testing.B) {
-		a := NewHeapWithConfig(1, NewSysArena(), GrowMin) //.ToSync()
+		a := NewHeapWithConfig(1, NewSliceArena(), GrowMin) //.ToSync()
 		runtime.GC()
 		runtime.GC()
 		b.ReportAllocs()

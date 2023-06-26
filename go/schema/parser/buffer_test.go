@@ -2,7 +2,7 @@ package parser
 
 import (
 	"fmt"
-	"github.com/moontrade/wap/memory"
+	"github.com/moontrade/wap/go/memory"
 	"runtime"
 	"testing"
 	"unsafe"

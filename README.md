@@ -1,4 +1,4 @@
-# WAP - WebAssembly Proto
+# WAP - WebAssembly Linear Protocol 
 
 ## Expressive Flat Data Structures
 Language / platform-agnostic wire-safe linear (flat) memory rich data models.

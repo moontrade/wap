@@ -1,0 +1,14 @@
+{
+  "name": "browser-launch",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "playwright": "^1.32.3",
+    "@playwright/test": "^1.32.3"
+  },
+  "devDependencies": {
+
+  }
+}

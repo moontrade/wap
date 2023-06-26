@@ -247,7 +247,7 @@ void do_rpmalloc_heap_free_all(size_t arg0, size_t arg1) {
 */
 import "C"
 import (
-	"github.com/moontrade/wap/internal/unsafecgo"
+	"github.com/moontrade/wap/go/internal/unsafecgo"
 	"unsafe"
 )
 

@@ -6,7 +6,7 @@ import (
 )
 
 func TestParser_Parse(t *testing.T) {
-	data, err := os.ReadFile("testdata/s.wap")
+	data, err := os.ReadFile("testdata/schema.wap")
 	if err != nil {
 		t.Fatal(err)
 	}

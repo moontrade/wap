@@ -1,7 +1,7 @@
 package parser
 
 import (
-	"github.com/moontrade/wap/memory"
+	"github.com/moontrade/wap/go/memory"
 	"math/bits"
 	"unsafe"
 )

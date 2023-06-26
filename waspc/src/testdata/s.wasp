@@ -1,0 +1,284 @@
+// WAP (WebAssembly Proto)
+// Cross-platform wire-safe rich linear data models that work everywhere including Webassembly.
+
+/*
+Multi line comment
+Another line
+*/
+
+// Zero copy / zero parsing flat structures
+// Optional JSON and Protobuf legacy wire format.
+// In-memory layout is flat like FlatBuffers or Capn' Proto
+// Supports small messages (<64kb) and large (1GB)
+// Supports highly mutable messages utilizing an internal memory allocator
+// Supports append only building for blazing fast construction or copying
+// Supports numerous collection types.
+//  - Array
+//  - Vector (list)
+//  - Map (unordered robin-hood map)
+//  - Map Ordered (ART Radix tree)
+//  - Tree (B+Tree)
+//
+// Extremely efficient memory layout and access. No bounds checking when possible.
+
+// Bounds Checking
+// Only pay for bounds checking when necessary.
+// Modes.
+// 1. Safe - Message was built with current generated code. No bounds checking at all.
+// 2. Partial - Use a view/builder variant for each internal struct root
+// 3. Unsafe - Perform bounds check on every access
+
+// Schema evolution .lock file to prevent catastrophic evolution deployment failures
+
+mod wap::model // some comment
+
+type str string
+
+/*
+imports (
+    "other.wap" = 1
+)
+
+import "other.wap" as other = 1
+
+type str_float_map map<string8, f64>
+using str_float_map = btree<string8, f64>
+
+const MAP str_float_map = [
+    "hi": "bye",
+    "bye", "hi"
+]
+*/
+
+enum AssetClass : u8 {
+    // Cash or spot
+    // CFDs
+    Cash        = 1 // spot or cash
+    Equity      = 2
+    FixedIncome = 3
+    RealEstate  = 4
+    Commodities = 5
+}
+
+enum InstrumentType u16 {
+    Shares      = 1
+    Futures     = 2
+    Spot        = 3
+    Option      = 4
+    Forward     = 5
+}
+
+struct Market {
+    // name comment
+    // some more about name
+    @1  name    ?string16..  // name inline comment
+    @2  format  PriceFormat
+    @3  symbol  string8..
+    @4  code    enum : u8 {
+        Success = 0,
+        Failed = 1,
+    }
+}
+
+enum PriceFormat : u8 {
+    Decimal0  = 0
+    Decimal1  = 1
+    Decimal2  = 2
+    Decimal3  = 3
+    Decimal4  = 4
+    Decimal5  = 5
+    Decimal6  = 6
+    Decimal7  = 7
+    Decimal8  = 8
+    Decimal9  = 9
+    Decimal10 = 10
+}
+
+struct Bar {
+    begin   u64
+    end     u64
+    open    f64
+    high    f64
+    low     f64
+    close   f64
+    up      f64
+    dn      f64
+}
+
+struct IntradayBar {
+    begin   u64
+    end     u64
+    open    f64
+    high    f64
+    low     f64
+    close   f64
+    up      f64
+    dn      f64
+    day_op  f64
+    day_hi  f64
+    day_lo  f64
+}
+
+enum Side : u8 {
+    Unknown = 0
+    Buy     = 1
+    Sell    = 2
+}
+
+enum Direction : u8 {
+    Unknown   = 0
+    ZeroMinus = 1
+    ZeroPlus  = 2
+    Minus     = 3
+    Plus      = 4
+}
+
+type EpochWithSide u64
+//type Price f64
+
+struct Volume {
+    total f64
+    buys  f64
+    sells f64
+}
+
+struct Trade {
+    time       u64
+    price      f64
+    volume     f64
+    side       Side
+    direction  Direction
+    .. 6
+}
+
+struct Candle {
+    open  f64
+    high  f64
+    low   f64
+    close f64
+}
+
+struct Price {
+    // open price
+    open f64; high ?f64, low f64;
+    close f64
+}
+
+/*
+union Union {
+    a u64
+    b i64
+}
+
+
+struct Order {
+1   id   i32b    = 10 // 32bit signed big endian
+2   cost f64     = MAX /* test */
+
+@11 code enum : i32 {
+        Create = 0
+    }
+
+20  code enum : i32 { Create = 0, Update = 1 }
+
+    // 4 byte padding comment above
+    .. 4;
+    .. 4; // 4 byte padding inline comment
+    .. 5, // 5 byte padding inline comment
+    .. 6 // 6 byte padding inline comment
+
+    @4  price
+        : map<i64, ?f64>
+        = {"hi": "bye", "bye", nil}
+
+    @3 union {
+        x       i32
+        y       string8...
+        union {
+            a   i32
+            b   f64
+        }
+    } = {b: 0.15, a: 3'000'000}
+
+    #[json(c)]
+    @5 candle struct {
+        open    f64
+        high    f64
+        low     f64
+        close   f64
+    } = {open: 1.0, 1.0, 1.0, 2.0}
+
+    6 value  Value // = {OHLC: {open: 0, high: 0, low: 0, close: 0}}
+    7 values_array     [4]Value
+    8 values_array     *[4]Value    // array pointer
+    9 values_vector    []*Value     // always a pointer
+
+    name string8..
+    slab [8..]byte
+
+    enum Code : i32 {
+        SUCCESS = 0
+        ERROR = 1
+    }
+
+    struct OHLC {
+        open    ?f64     // the open value
+        high    ?f64     // the highest value
+        low     ?f64     // the lowest value
+        close   ?f64     // the close value
+    }
+}
+
+variant String {
+    string15
+    string
+}
+
+// variant is a type-safe union
+// other names:
+//      tagged union
+//      oneof
+// Some languages have this type built-in
+//      Rust = enum
+//      C++ = std::variant
+//      Kotlin = sealed class
+//      Go = interface contract
+variant Value {
+    bool
+    i64
+    f64
+    // inline string that cannot spill over and must not contain more than 8 bytes
+    string8
+    // flexible sized string. pointer type.
+    String string
+    // pointer to a struct
+    OHLCPointer *Order::OHLC
+    // embedded struct
+    OHLC Order::OHLC
+    OHLCOption ?Order::OHLC
+}
+
+// layout of a variant type
+struct Variant {
+    @1 index u8
+    .. 7 // removed if packed
+    @2 value union {
+        a bool
+        b i64
+        c f64
+        d string8
+        e string
+        f *Order::OHLC
+        g Order::OHLC
+        ... 30
+    }
+}
+*/
+
+struct error {
+
+}
+
+struct cache {
+
+}

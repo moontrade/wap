@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "wapr",
-    "wapc",
-    "wasm"
+    "waspr",
+    "wasm",
 ]
+exclude = ["wasibase", "waspc"]

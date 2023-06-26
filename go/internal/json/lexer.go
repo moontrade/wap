@@ -31,7 +31,7 @@ const (
 
 // token describes a single token: type, position in the input and value.
 type token struct {
-	kind tokenKind // Type of a token.
+	kind tokenKind // Type of token.
 
 	boolValue       bool   // Value if a boolean literal token.
 	byteValueCloned bool   // true if byteValue was allocated and does not refer to original json body
@@ -61,12 +61,12 @@ func (r *Lexer) FetchToken() {
 	r.start = r.pos
 
 	// Check if r.Data has r.pos element
-	// If it doesn't, it mean corrupted input data
+	// If it doesn't, it means corrupted input data
 	if len(r.Data) < r.pos {
 		r.errParse("Unexpected end of data")
 		return
 	}
-	// Determine the type of a token by skipping whitespace and reading the
+	// Determine the type of token by skipping whitespace and reading the
 	// first character.
 	for _, c := range r.Data[r.pos:] {
 		switch c {

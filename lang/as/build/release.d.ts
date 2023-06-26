@@ -1,3 +1,5 @@
+/** Exported memory */
+export declare const memory: WebAssembly.Memory;
 /**
  * assembly/index/add
  * @param a `i32`

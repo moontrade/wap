@@ -1,0 +1,27 @@
+[package]
+name = "waspr"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+
+
+[dev-dependencies]
+rand = "0.8"
+criterion = "0.4"
+
+#[[bench]]
+#name = "art_bench"
+#path = "benches/art_bench.rs"
+#harness = false
+
+[profile.release]
+opt-level = 'z'
+lto = true
+strip = true
+panic = "abort"

@@ -243,7 +243,7 @@ mod tests {
         let store_fn = instance.get_typed_func::<(i32, i32), (), _>(&mut store, "store").unwrap();
 
         b.iter(|| {
-            load_fn.call(&mut store, 0x1002).unwrap();
+            // load_fn.call(&mut store, 0x1002).unwrap();
             // store_fn.call(&mut store, (0x30000, 0)).unwrap();
         });
     }

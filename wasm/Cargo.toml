@@ -16,21 +16,27 @@ name = "client"
 path = "examples/client.rs"
 
 [[example]]
+name = "echo2"
+path = "examples/echo2.rs"
+
+[[example]]
 name = "uds"
 path = "examples/uds.rs"
 
+
 [dependencies]
 log = "0.4"
-env_logger = "0.9"
-wapr = { path = "../wapr" }
-anyhow = "1.0.57"
-futures = "0.3.*"
-wee_alloc = "0.4.*"
-wasm-bindgen = "0.2.*"
-#wasmedge-sys = "0.5.0"
-wasmtime = "0.36.0"
-wasmtime-wasi = {version = "0.36", features = ["wasi-tokio", "tokio"] }
-ntex = { version = "0.5", features = ["tokio", "rustls"] }
+env_logger = "0.10"
+waspr = { path = "../waspr" }
+anyhow = "1.0"
+futures = "0.3"
+mimalloc = { version = "0.1", default-features = false }
+wee_alloc = "0.4"
+wasm-bindgen = "0.2"
+# wasmedge-sys = "0.5"
+wasmtime = "6.0"
+wasmtime-wasi = {version = "6.0", features = ["wasi-tokio", "tokio"] }
+ntex = { version = "0.6", features = ["tokio", "rustls"] }
 
 [profile.release]
 opt-level = "s"

@@ -1,9 +1,13 @@
-use std::{env, io};
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 use log::info;
 use ntex::http::header::HeaderValue;
 use ntex::http::{HttpService, Response};
 use ntex::{server::Server, time::Seconds, util::Ready};
+use std::{env, io};
 
 #[ntex::main]
 async fn main() -> io::Result<()> {
@@ -22,6 +26,7 @@ async fn main() -> io::Result<()> {
                     Ready::Ok::<_, io::Error>(res.body("Hello world!"))
                 })
         })?
+        .workers(1)
         .run()
         .await
 }
