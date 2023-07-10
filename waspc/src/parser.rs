@@ -1,16 +1,24 @@
+use std::cell::RefCell;
 use std::fmt;
 use std::fmt::{Formatter, Write};
 use std::iter::Peekable;
 use std::num::ParseIntError;
 use std::ops::Index;
+use std::rc::Rc;
 use std::str::{CharIndices, FromStr};
 
-use crate::model::{Const, Endian, Enum, Kind, KindVariant, Mut, Struct, Type, Value};
+use crate::model::{
+    CommentBuf, Const, Endian, Enum, Kind, ModelError, Module, Optional, ParentKind, Pointer,
+    Position, Ref, Str, Struct, StructKind, Value, F32, F32BE, F64, F64BE, I128, I128BE, I16,
+    I16BE, I32, I32BE, I64, I64BE, I8, U128, U128BE, U16, U16BE, U32, U32BE, U64, U64BE, U8,
+};
 
-use super::model::{Comments, Module, Position};
+// use crate::model::{Const, Endian, Enum, Kind, KindVariant, Mut, Struct, Type, Value};
+
+// use super::model::{Comments, Module, Position};
 
 pub struct Parser<'a> {
-    module: Mut<'a, Module<'a>>,
+    module: Ref<Module>,
     contents: &'a String,
     iter: Peekable<CharIndices<'a>>,
     mark: Position,
@@ -24,19 +32,19 @@ pub struct Parser<'a> {
     prev: Token,
     token: Token,
     next: Token,
-    comments: Comments,
+    comments: CommentBuf,
     numeral: Option<Numeral>,
 }
 
-pub fn parse<'a>(contents: &'a String) -> anyhow::Result<Box<Module<'a>>> {
+pub fn parse<'a>(contents: &'a String) -> anyhow::Result<Ref<Module>> {
     Parser::parse(contents)
 }
 
 impl<'a> Parser<'a> {
-    pub fn parse(contents: &'a String) -> anyhow::Result<Box<Module<'a>>> {
-        let mut module = Box::new(Module::new(contents.to_owned()));
+    pub fn parse(contents: &'a String) -> anyhow::Result<Ref<Module>> {
+        let mut module = Module::new(Some(contents.to_owned()));
         let mut p = Self {
-            module: Mut::new(module.as_mut()),
+            module: Ref::Weak(module.downgrade()),
             contents,
             iter: contents.char_indices().peekable(),
             mark: Position::new(0, 0, 0),
@@ -50,7 +58,7 @@ impl<'a> Parser<'a> {
             prev: Token::None,
             token: Token::None,
             next: Token::None,
-            comments: Comments::new(),
+            comments: CommentBuf::new(),
             numeral: None,
         };
         p.run()?;
@@ -106,6 +114,7 @@ pub enum ParseError {
         token: TokenSpan,
         message: Option<String>,
     },
+    ModelError(ModelError),
     // CannotNest { parent: &'static str, child: &'static str },
 }
 
@@ -147,7 +156,11 @@ impl ParseError {
     pub fn format(&self) -> anyhow::Result<String> {
         let mut out = String::new();
         match &self {
-            ParseError::InvalidCharacter { token, character, message } => {
+            ParseError::InvalidCharacter {
+                token,
+                character,
+                message,
+            } => {
                 out.write_str("invalid character '")?;
                 out.write_char(*character)?;
                 out.write_str("'")?;
@@ -208,6 +221,9 @@ impl ParseError {
                 }
                 out.write_str("\n")?;
                 self.format_span(token, &mut out)?;
+            }
+            ParseError::ModelError(err) => {
+                out.write_str(err.to_string().as_str()).expect("");
             }
         }
 
@@ -682,19 +698,12 @@ impl<'a> Parser<'a> {
             Some(index) => {
                 self.contents[self.current_line_index..(self.pos.index + index)].to_owned()
             }
-            None => {
-                self.contents[self.current_line_index..=self.pos.index].to_owned()
-            }
+            None => self.contents[self.current_line_index..=self.pos.index].to_owned(),
         };
 
         // let slice = self.contents[self.current_line_index..=self.pos.index].to_owned();
 
-        TokenSpan::new(
-            self.token,
-            self.mark,
-            self.pos,
-            line,
-        )
+        TokenSpan::new(self.token, self.mark, self.pos, line)
     }
 
     fn token_position(&mut self) -> TokenPosition {
@@ -822,7 +831,10 @@ impl<'a> Parser<'a> {
         if is_float {
             match f64::from_str(text) {
                 Ok(value) => {
-                    self.numeral = Some(Numeral::Float { text: text.to_owned(), value });
+                    self.numeral = Some(Numeral::Float {
+                        text: text.to_owned(),
+                        value,
+                    });
                     Ok(())
                 }
                 Err(err) => Err(anyhow::Error::msg(ParseError::BadNumeral {
@@ -833,7 +845,10 @@ impl<'a> Parser<'a> {
         } else if is_signed {
             match i128::from_str(text) {
                 Ok(value) => {
-                    self.numeral = Some(Numeral::Int { text: text.to_owned(), value });
+                    self.numeral = Some(Numeral::Int {
+                        text: text.to_owned(),
+                        value,
+                    });
                     Ok(())
                 }
                 Err(err) => Err(anyhow::Error::msg(ParseError::BadNumeral {
@@ -844,7 +859,10 @@ impl<'a> Parser<'a> {
         } else {
             match u128::from_str(text) {
                 Ok(value) => {
-                    self.numeral = Some(Numeral::UInt { text: text.to_owned(), value });
+                    self.numeral = Some(Numeral::UInt {
+                        text: text.to_owned(),
+                        value,
+                    });
                     Ok(())
                 }
                 Err(err) => Err(anyhow::Error::msg(ParseError::BadNumeral {
@@ -858,7 +876,7 @@ impl<'a> Parser<'a> {
     fn is_non_essential(&self) -> bool {
         match self.token {
             Token::Whitespace | Token::NewLine | Token::LineComment | Token::BlockComment => true,
-            _ => false
+            _ => false,
         }
     }
 
@@ -978,22 +996,25 @@ impl<'a> Parser<'a> {
                     match text {
                         "mod" | "module" | "namespace" => self.parse_mod()?,
                         "import" => {}
-                        "type" | "using" | "alias" => self.parse_alias()?,
+                        "type" | "using" | "alias" => {
+                            self.parse_alias(ParentKind::Module(self.module.clone_weak()))?
+                        }
                         "const" => self.parse_const()?,
                         "enum" => {
                             self.next_essential()?;
-                            s.module_mut(|m| {
-                                self.parse_enum(m.root_mut(), false)
-                            })?;
+                            let module = self.module.as_mut();
+                            let mut e = module.add_enum(None)?;
+                            self.parse_enum(e.as_mut(), false)?;
                             self.maybe_consume_non_essential()?;
                         }
                         "struct" => {
                             self.next_essential()?;
                             self.expect_token(Token::Word)?;
-                            let s = self.module_mut(|m| Ok(m.new_struct()))?;
-                            s.set_name(self.word().to_owned());
+                            let name = self.word().to_owned();
+                            let module = self.module.as_mut();
+                            let mut s = module.add_struct(Some(name), StructKind::Struct)?;
                             self.expect_curly_open()?;
-                            self.visit_struct(s)?;
+                            self.visit_struct(s.as_mut())?;
                         }
                         _ => {}
                     }
@@ -1014,7 +1035,8 @@ impl<'a> Parser<'a> {
         self.expect_next_token(Token::Whitespace)?;
         match self.expect_next()? {
             Token::Word | Token::QualifiedName => {
-                self.module.root_mut().module_mut().full_name = self.word().to_owned();
+                let full_name = Some(self.word().to_owned());
+                self.module.as_mut().set_full_name(full_name);
             }
             _ => return self.err_expected_token_one_of(vec![Token::Word, Token::ColonColon]),
         }
@@ -1037,12 +1059,21 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_alias(&mut self) -> anyhow::Result<()> {
+    fn parse_alias(&mut self, parent: ParentKind) -> anyhow::Result<()> {
         self.next_essential()?;
         self.expect_token(Token::Word)?;
 
         let name = self.word();
-        let alias = self.module_mut(|m| Ok(m.new_alias(name, None)))?;
+
+        let mut alias = match parent {
+            ParentKind::Module(mut m) => m.as_mut().add_alias(name.to_owned(), Kind::None)?,
+            ParentKind::Struct(mut s) => s.as_mut().add_alias(name.to_owned(), Kind::None)?,
+            _ => {
+                return Err(anyhow::Error::msg(ParseError::ModelError(
+                    ModelError::InvalidAliasParent(name.to_string()),
+                )))
+            }
+        };
 
         self.next_essential()?;
         // Consume '=' if exists
@@ -1051,9 +1082,8 @@ impl<'a> Parser<'a> {
             self.next_essential()?;
         }
 
-        // let alias = self.module.new_alias(name, None);
-        let of = self.parse_type(alias.this_mut())?;
-        alias.set_of(Some(of));
+        let of = self.parse_type(Kind::Alias(alias.clone_weak()))?;
+        alias.as_mut().set_kind(of);
 
         Ok(())
     }
@@ -1062,24 +1092,17 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn parse_enum(
-        &mut self,
-        parent: &'a mut Type<'a>,
-        inline: bool,
-    ) -> anyhow::Result<(&'a mut Enum<'a>, &'a mut Type<'a>)> {
+    fn parse_enum(&mut self, e: &mut Enum, inline: bool) -> anyhow::Result<()> {
         self.maybe_consume_non_essential()?;
-        let comments = self.comments.take();
+        e.set_comment(self.comments.take());
 
-        let name = if !inline {
+        if !inline {
             let word = self.word();
             self.expect_next()?;
-            word
+            e.set_name(Some(word.to_owned()));
         } else {
-            ""
+            e.set_name(None);
         };
-
-        let (e, parent) = parent.new_enum(name, None, comments);
-        // let mut e = self.module_mut(move |m| m.new_enum(name, None, comments));
 
         self.maybe_consume_non_essential()?;
 
@@ -1089,38 +1112,30 @@ impl<'a> Parser<'a> {
 
         self.expect_token(Token::Word)?;
         let span = self.token_span();
-        let of = self.parse_type(e.this_mut())?;
-        match of.kind() {
-            Kind::I8 => {}
-            Kind::U8 => {}
-            Kind::I16(_) => {}
-            Kind::U16(_) => {}
-            Kind::I32(_) => {}
-            Kind::U32(_) => {}
-            Kind::I64(_) => {}
-            Kind::U64(_) => {}
-            Kind::I128(_) => {}
-            Kind::U128(_) => {}
-            Kind::F32(_) => {}
-            Kind::F64(_) => {}
+        let of = self.parse_type(e.kind())?;
+        match of {
+            Kind::Int(_) => {}
+            Kind::Float(_) => {}
             _ => {
-                return Err(anyhow::Error::msg(ParseError::InvalidEnumType { token: span }));
+                return Err(anyhow::Error::msg(ParseError::InvalidEnumType {
+                    token: span,
+                }));
             }
         }
-        e.set_of(Some(of));
+        e.set_of(of);
         self.next_essential()?;
 
         self.expect_token(Token::CurlyOpen)?;
         self.expect_next()?;
         self.visit_enum(e)?;
-        Ok((e, parent))
-    }
-
-    fn visit_const(&mut self, e: &mut Const<'a>) -> anyhow::Result<()> {
         Ok(())
     }
 
-    fn visit_enum(&mut self, e: &mut Enum<'a>) -> anyhow::Result<()> {
+    fn visit_const(&mut self, e: &mut Const) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn visit_enum(&mut self, e: &mut Enum) -> anyhow::Result<()> {
         'option_loop: loop {
             self.maybe_consume_non_essential()?;
             let comments = self.comments.take();
@@ -1142,7 +1157,7 @@ impl<'a> Parser<'a> {
             let value = match numeral {
                 Numeral::Float { text, value } => Value::F64(value),
                 Numeral::Int { text, value } => Value::I128(value),
-                Numeral::UInt { text, value } => Value::U128(value)
+                Numeral::UInt { text, value } => Value::U128(value),
             };
 
             self.expect_next()?;
@@ -1151,7 +1166,8 @@ impl<'a> Parser<'a> {
             }
 
             let line_comment = self.comments.take();
-            e.add_option(name, value, comments, line_comment);
+            e.add_option(comments, name.to_owned(), value);
+            // e.add_option(name, value, comments, line_comment);
 
             if self.token == Token::Comma {
                 self.expect_next()?;
@@ -1163,11 +1179,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn module_mut<R>(&mut self, f: impl FnOnce(&'a mut Module<'a>) -> anyhow::Result<R>) -> anyhow::Result<R> {
+    fn module_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut Module) -> anyhow::Result<R>,
+    ) -> anyhow::Result<R> {
         f(self.module.as_mut())
     }
 
-    fn visit_struct(&mut self, s: &mut Struct<'a>) -> anyhow::Result<()> {
+    fn visit_struct(&mut self, s: &mut Struct) -> anyhow::Result<()> {
         self.maybe_consume_non_essential()?;
         if self.token == Token::CurlyClose {
             return Ok(());
@@ -1205,8 +1224,12 @@ impl<'a> Parser<'a> {
                     self.expect_token(Token::Numeral)?;
                     let size = self.expect_positive_int()?;
                     self.next_essential()?;
-                    let mut field = s.new_field("", 0, comments);
-                    field.this_mut().new_padding(size);
+                    s.add_field(move |f| {
+                        f.set_comment(comments.clone());
+                        f.set_size(size as i32);
+                        f.set_kind(Kind::Pad(size as i32));
+                        Ok(())
+                    })?;
                     continue 'field_loop;
                 }
 
@@ -1261,140 +1284,115 @@ impl<'a> Parser<'a> {
 
             self.next_essential()?;
 
-            let field = s.new_field(name, field_number, comments);
+            let mut field = s.add_field(move |f| Ok(()))?;
 
-            let ty = self.parse_type(field.this_mut())?;
-            field.set_type(Some(ty));
+            let kind = self.parse_type(Kind::Field(field.clone()))?;
+            field.as_mut().set_kind(kind);
             self.maybe_consume_non_essential()?;
         }
     }
 
-    fn parse_type(&mut self, parent: &'a mut Type<'a>) -> anyhow::Result<&'a mut Type<'a>> {
+    fn parse_type(&mut self, parent: Kind) -> anyhow::Result<Kind> {
         let _is_const = parent.is_const();
         let _is_alias = parent.is_alias();
         let is_field = parent.is_field();
         let _is_root = parent.is_module();
 
         // self.consume_non_essential()?;
-        let (new_type, parent) = match self.token {
+        let kind = match self.token {
             Token::QuestionMark => {
                 if parent.is_optional() {
                     return Err(anyhow::Error::msg(ParseError::InvalidCharacter {
                         token: self.token_span(),
                         character: self.current_char,
-                        message: Some("cannot have an optional of an optional \'??\' can only have a single '?' character".to_owned()),
+                        message: Some("cannot have an optional of an optional \'??\'".to_owned()),
                     }));
                 }
                 self.expect_next()?;
-                let optional = parent.new_optional(None);
-                let child = self.parse_type(optional.this_mut())?;
-                optional.set_of(Some(child));
-                (optional.this_mut(), parent)
+                let mut optional = Ref::new(Optional::new(None));
+                let child = self.parse_type(Kind::Optional(optional.clone()))?;
+                optional.as_mut().set_kind(Some(child));
+                Kind::Optional(optional)
             }
 
             Token::Star => {
+                let parent = parent.as_parent_kind()?;
                 self.expect_next()?;
-                let pointer = parent.new_pointer(None);
-                let child = self.parse_type(pointer.this_mut())?;
-                pointer.set_of(Some(child));
-                (pointer.this_mut(), parent)
+                let mut pointer = Pointer::new(parent, Kind::None);
+                let child = self.parse_type(Kind::Pointer(pointer.clone_weak()))?;
+                pointer.as_mut().set_kind(child);
+                Kind::Pointer(pointer)
             }
 
-            Token::BracketOpen => {
-                match self.expect_next()? {
-                    // array
-                    Token::Numeral => {
-                        let size = self.expect_positive_int()?;
-                        match self.expect_next()? {
-                            Token::BracketClose => {
-                                let new_type = parent.new_array(size);
-                                self.next_essential()?;
-                                let child = self.parse_type(new_type.this_mut())?;
-                                new_type.set_element(Some(child));
-                                (new_type.this_mut(), parent)
-                            }
-                            Token::DotDot => {
-                                self.expect_next_token(Token::BracketClose)?;
-                                let new_type = parent.new_array_vector(size);
-                                self.next_essential()?;
-                                let child = self.parse_type(new_type.this_mut())?;
-                                new_type.set_element(Some(child));
-                                (new_type.this_mut(), parent)
-                            }
-                            _ => {
-                                return self
-                                    .err_token_one_of(vec![Token::Numeral, Token::BracketClose]);
-                            }
-                        }
-                    }
-                    // vector
-                    Token::BracketClose => {
-                        let new_type = parent.new_vector();
-                        self.next_essential()?;
-                        let child = self.parse_type(new_type.this_mut())?;
-                        new_type.set_element(Some(child));
-                        (new_type.this_mut(), parent)
-                    }
-                    _ => return self.err_token_one_of(vec![Token::Numeral, Token::BracketClose]),
-                }
-            }
-
+            // Token::BracketOpen => {
+            //     match self.expect_next()? {
+            //         // array
+            //         Token::Numeral => {
+            //             let size = self.expect_positive_int()?;
+            //             match self.expect_next()? {
+            //                 Token::BracketClose => {
+            //                     let new_type = parent.new_array(size);
+            //                     self.next_essential()?;
+            //                     let child = self.parse_type(new_type.this_mut())?;
+            //                     new_type.set_element(Some(child));
+            //                     (new_type.this_mut(), parent)
+            //                 }
+            //                 Token::DotDot => {
+            //                     self.expect_next_token(Token::BracketClose)?;
+            //                     let new_type = parent.new_array_vector(size);
+            //                     self.next_essential()?;
+            //                     let child = self.parse_type(new_type.this_mut())?;
+            //                     new_type.set_element(Some(child));
+            //                     (new_type.this_mut(), parent)
+            //                 }
+            //                 _ => {
+            //                     return self
+            //                         .err_token_one_of(vec![Token::Numeral, Token::BracketClose]);
+            //                 }
+            //             }
+            //         }
+            //         // vector
+            //         Token::BracketClose => {
+            //             let new_type = parent.new_vector();
+            //             self.next_essential()?;
+            //             let child = self.parse_type(new_type.this_mut())?;
+            //             new_type.set_element(Some(child));
+            //             (new_type.this_mut(), parent)
+            //         }
+            //         _ => return self.err_token_one_of(vec![Token::Numeral, Token::BracketClose]),
+            //     }
+            // }
             Token::QualifiedName => {
                 // user-defined
-                (parent.new_unknown(Some(self.word())).this_mut(), parent)
+                Kind::Unknown(self.word().to_owned())
             }
 
             Token::Word => {
                 let name = self.word();
                 match name {
-                    "bool" | "boolean" => {
-                        let t = unsafe {
-                            &mut *(parent.new_bool() as *mut Type<'a>)
-                        };
-                        (t, parent)
-                    }
-                    "i8" => {
-                        let t = unsafe {
-                            &mut *(parent.new_i8() as *mut Type<'a>)
-                        };
-                        (t, parent)
-                    }
-                    "i16" | "i16l" => (parent.new_i16(Endian::Little).this_mut(), parent),
-                    "i16b" => (parent.new_i16(Endian::Big).this_mut(), parent),
-                    "i16n" => (parent.new_i16(Endian::Native).this_mut(), parent),
-                    "i32" | "i32l" => (parent.new_i32(Endian::Little).this_mut(), parent),
-                    "i32b" => (parent.new_i32(Endian::Big).this_mut(), parent),
-                    "i32n" => (parent.new_i32(Endian::Native).this_mut(), parent),
-                    "i64" | "i64l" => (parent.new_i64(Endian::Little).this_mut(), parent),
-                    "i64b" => (parent.new_i64(Endian::Big).this_mut(), parent),
-                    "i64n" => (parent.new_i64(Endian::Native).this_mut(), parent),
-                    "i128" | "i128l" => (parent.new_i128(Endian::Little).this_mut(), parent),
-                    "i128b" => (parent.new_i128(Endian::Big).this_mut(), parent),
-                    "i128n" => (parent.new_i128(Endian::Native).this_mut(), parent),
-                    "u8" => {
-                        let t = unsafe {
-                            &mut *(parent.new_u8() as *mut Type<'a>)
-                        };
-                        (t, parent)
-                    }
-                    "u16" | "u16l" => (parent.new_u16(Endian::Little).this_mut(), parent),
-                    "u16b" => (parent.new_u16(Endian::Big).this_mut(), parent),
-                    "u16n" => (parent.new_u16(Endian::Native).this_mut(), parent),
-                    "u32" | "u32l" => (parent.new_u32(Endian::Little).this_mut(), parent),
-                    "u32b" => (parent.new_u32(Endian::Big).this_mut(), parent),
-                    "u32n" => (parent.new_u32(Endian::Native).this_mut(), parent),
-                    "u64" | "u64l" => (parent.new_u64(Endian::Little).this_mut(), parent),
-                    "u64b" => (parent.new_u64(Endian::Big).this_mut(), parent),
-                    "u64n" => (parent.new_u64(Endian::Native).this_mut(), parent),
-                    "u128" | "u128l" => (parent.new_u128(Endian::Little).this_mut(), parent),
-                    "u128b" => (parent.new_u128(Endian::Big).this_mut(), parent),
-                    "u128n" => (parent.new_u128(Endian::Native).this_mut(), parent),
-                    "f32" | "f32l" => (parent.new_f32(Endian::Little).this_mut(), parent),
-                    "f32b" => (parent.new_f32(Endian::Big).this_mut(), parent),
-                    "f32n" => (parent.new_f32(Endian::Native).this_mut(), parent),
-                    "f64" | "f64l" => (parent.new_f64(Endian::Little).this_mut(), parent),
-                    "f64b" => (parent.new_f64(Endian::Big).this_mut(), parent),
-                    "f64n" => (parent.new_f64(Endian::Native).this_mut(), parent),
+                    "bool" | "boolean" => Kind::Bool,
+                    "i8" => I8,
+                    "i16" | "i16l" => I16,
+                    "i16b" => I16BE,
+                    "i32" | "i32l" => I32,
+                    "i32b" => I32BE,
+                    "i64" | "i64l" => I64,
+                    "i64b" => I64BE,
+                    "i128" | "i128l" => I128,
+                    "i128b" => I128BE,
+                    "u8" | "byte" => U8,
+                    "u16" | "u16l" => U16,
+                    "u16b" => U16BE,
+                    "u32" | "u32l" => U32,
+                    "u32b" => U32BE,
+                    "u64" | "u64l" => U64,
+                    "u64b" => U64BE,
+                    "u128" | "u128l" => U128,
+                    "u128b" => U128BE,
+                    "f32" | "f32l" => F32,
+                    "f32b" => F32BE,
+                    "f64" | "f64l" => F64,
+                    "f64b" => F64BE,
 
                     // "map" | "flat_map" => {}
                     // "set" | "flat_set" => {}
@@ -1408,46 +1406,49 @@ impl<'a> Parser<'a> {
                     // }
                     // "union" => {}
                     // "variant" => {}
-                    "enum" => {
-                        if parent.is_const() {
-                            return Err(anyhow::Error::msg(ParseError::InvalidConst {
-                                token: self.token_span(),
-                                message: Some("const cannot inline declare an enum".to_owned()),
-                            }));
-                        }
-                        self.next_essential()?;
-                        let (t, parent) = self.parse_enum(parent, true)?;
-                        (t.this_mut(), parent)
-                    }
-
+                    // "enum" => {
+                    //     if parent.is_const() {
+                    //         return Err(anyhow::Error::msg(ParseError::InvalidConst {
+                    //             token: self.token_span(),
+                    //             message: Some("const cannot inline declare an enum".to_owned()),
+                    //         }));
+                    //     }
+                    //     self.next_essential()?;
+                    //     let (t, parent) = self.parse_enum(parent, true)?;
+                    //     (t.this_mut(), parent)
+                    // }
                     _ => {
                         if name.starts_with("string") {
                             if name == "string" {
-                                (parent.new_string().this_mut(), parent)
+                                Kind::String(Str::new_heap())
                             } else {
                                 let size_str = &name[6..];
                                 match usize::from_str(size_str) {
-                                    Ok(size) => {
-                                        match self.peek() {
-                                            Some('.') => match self.peek() {
-                                                Some('.') => {
-                                                    self.expect_next_token(Token::DotDot)?;
-                                                    (parent.new_string_inline_plus(size).this_mut(), parent)
-                                                }
-                                                Some(_) | None => (parent.new_string_inline(size).this_mut(), parent)
+                                    Ok(size) => match self.peek() {
+                                        Some('.') => match self.peek() {
+                                            Some('.') => {
+                                                self.expect_next_token(Token::DotDot)?;
+                                                Kind::String(Str::new_inline_heap(size as i32))
                                             }
-                                            Some(_) | None => (parent.new_string_inline(size).this_mut(), parent)
+                                            Some(_) | None => {
+                                                Kind::String(Str::new_inline(size as i32))
+                                            }
+                                        },
+                                        Some(_) | None => {
+                                            Kind::String(Str::new_inline(size as i32))
                                         }
+                                    },
+                                    Err(_) => {
+                                        return Err(anyhow::Error::msg(ParseError::BadNumeral {
+                                            token: self.token_span(),
+                                            reason: "expected a string length".to_owned(),
+                                        }))
                                     }
-                                    Err(_) => return Err(anyhow::Error::msg(ParseError::BadNumeral {
-                                        token: self.token_span(),
-                                        reason: "expected a string length".to_owned(),
-                                    }))
                                 }
                             }
                         } else {
                             // user-defined
-                            (parent.new_unknown(Some(name)).this_mut(), parent)
+                            Kind::Unknown(name.to_owned())
                         }
                     }
                 }
@@ -1465,45 +1466,47 @@ impl<'a> Parser<'a> {
             }
         };
 
-        if is_field {
+        if let Kind::Field(mut f) = parent {
+            let field = f.as_mut();
+
             loop {
                 match self.expect_next()? {
                     Token::Whitespace => {}
                     Token::NewLine => {
                         self.next_essential()?;
-                        return Ok(new_type);
+                        return Ok(kind);
                     }
                     Token::LineComment => {
                         let line_comment = self.comments.take();
-                        parent.set_inline_comment(line_comment);
+                        field.set_line_comment(line_comment);
                         self.next_essential()?;
-                        return Ok(new_type);
+                        return Ok(kind);
                     }
                     Token::BlockComment => {
                         self.next_essential()?;
-                        return Ok(new_type);
+                        return Ok(kind);
                     }
                     Token::Comma | Token::Semicolon => {
                         self.next_essential()?;
-                        return Ok(new_type);
+                        return Ok(kind);
                     }
                     Token::Equals => {
-                        if !new_type.can_default() {
-                            return Err(anyhow::Error::msg(ParseError::VariantFieldDefault {
-                                token: self.token_position(),
-                            }));
-                        }
+                        // if !new_type.can_default() {
+                        //     return Err(anyhow::Error::msg(ParseError::VariantFieldDefault {
+                        //         token: self.token_position(),
+                        //     }));
+                        // }
                         self.next_essential()?;
                     }
                     Token::At | Token::Word | Token::Numeral => {
-                        return Ok(new_type);
+                        return Ok(kind);
                     }
                     _ => {}
                 }
             }
         }
 
-        Ok(new_type)
+        Ok(kind)
     }
 
     fn parse_value(&mut self) -> anyhow::Result<()> {
@@ -1588,27 +1591,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_type() {
-        let mut m = Module::new("".to_owned());
-
-        let s = m.new_struct();
-
-        // let (mut t, o) = Type::new_struct(Some(String::from("Order")));
-        //
-        // Type::new_struct_fn(Some(String::from("Order")), |t, s| {
-        //
-        // });
-        //
-        // println!("{}", t.name());
-        println!("done");
-    }
-
-    #[test]
     fn parser() {
         // match std::fs::read_to_string("wapc/src/testdata/s.wap") {
         let file = std::env::current_dir().unwrap().to_str().unwrap();
         println!("{}", std::env::current_dir().unwrap().to_str().unwrap());
-        match std::fs::read_to_string(Path::new("src/testdata/s.wasp")) {
+        println!("{}", std::env::current_dir().unwrap().to_str().unwrap());
+
+        match std::fs::read_to_string(
+            Path::new(std::env::current_dir().unwrap().to_str().unwrap())
+                .join(Path::new("src/testdata/simple.wap")),
+        ) {
+            // match std::fs::read_to_string(Path::new("./src/testdata/simple.wasp")) {
             Ok(s) => match Parser::parse(&s) {
                 Ok(_module) => {
                     println!("done!");

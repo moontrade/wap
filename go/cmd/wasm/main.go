@@ -1,19 +1,19 @@
 package main
 
-import "time"
+//import "time"
 
 func main() {
 	println("hi")
-	c := make(chan int64, 1)
-	go func() {
-		for {
-			time.Sleep(time.Second)
-			c <- time.Now().UnixNano()
-		}
-	}()
-	for {
-		println("hi", <-c)
-	}
+	//c := make(chan int64, 1)
+	//go func() {
+	//	for {
+	//		time.Sleep(time.Second)
+	//		c <- 0 //time.Now().UnixNano()
+	//	}
+	//}()
+	//for {
+	//	println("hi", <-c)
+	//}
 }
 
 //export moontrade.alloc

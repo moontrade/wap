@@ -1,9 +1,10 @@
 package parser
 
 import (
-	"github.com/moontrade/wap/go/memory"
 	"math/bits"
 	"unsafe"
+
+	"github.com/moontrade/wap/go/memory"
 )
 
 type OrderStruct struct {
@@ -14,12 +15,15 @@ type OrderStruct struct {
 func (o *OrderStruct) ID() int32 {
 	return o.id
 }
+
 func (o *OrderStruct) Price() float32 {
 	return o.price
 }
+
 func (o *OrderStruct) SetID(v int32) {
 	o.id = v
 }
+
 func (o *OrderStruct) SetPrice(v float32) {
 	o.price = v
 }

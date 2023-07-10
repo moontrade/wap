@@ -1,6 +1,7 @@
 [workspace]
 members = [
+    "waspc",
     "waspr",
-    "wasm",
+    # "wasm",
 ]
-exclude = ["wasibase", "waspc"]
+exclude = ["wasm", "wasibase", "ui/leptos-tutorial"]

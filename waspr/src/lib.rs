@@ -7,6 +7,7 @@
 #![feature(bigint_helper_methods)]
 // #[allow(soft_unstable)]
 #![feature(mem_copy_fn)]
+#![feature(core_intrinsics)]
 
 #![feature(test)]
 extern crate test;

@@ -80,9 +80,9 @@ pub fn compute_float(r: u64) -> f64 {
 #[inline(always)]
 pub fn compute_gaussian(r: u64) -> f64 {
     static NORM: f64 = 1.0f64 / (1u64 << 20u64) as f64;
-    ((r & 0x1fffffu64) + ((r >> 21u64) & 0x1fffffu64) + ((r >> 42u64) & 0x1fffffu64)) as f64 * NORM - 3.0f64
+    ((r & 0x1fffffu64) + ((r >> 21u64) & 0x1fffffu64) + ((r >> 42u64) & 0x1fffffu64)) as f64 * NORM
+        - 3.0f64
 }
-
 
 #[inline(always)]
 fn read32(b: *const u8) -> u64 {
@@ -97,7 +97,11 @@ fn read64(b: *const u8) -> u64 {
 
 #[inline(always)]
 fn hash_bool(v: bool) -> u64 {
-    if v { hash_u8(1) } else { hash_u8(0) }
+    if v {
+        hash_u8(1)
+    } else {
+        hash_u8(0)
+    }
 }
 
 #[inline(always)]
@@ -109,7 +113,10 @@ pub fn hash_i8(v: i8) -> u64 {
 pub fn hash_u8(v: u8) -> u64 {
     // unsafe { hash(&v as *const u8, 1, DEFAULT_SEED)}
     let v = v as u64;
-    mix(S0 ^ 1u64, mix(((v << 16) | (v << 8) | v) ^ S0, 0 ^ DEFAULT_SEED))
+    mix(
+        S0 ^ 1u64,
+        mix(((v << 16) | (v << 8) | v) ^ S0, 0 ^ DEFAULT_SEED),
+    )
 }
 
 #[inline(always)]
@@ -123,8 +130,8 @@ pub fn hash_u16(v: u16) -> u64 {
     unsafe {
         let mut v = v.to_le();
         let bytes = &v as *const u16 as *const u8;
-        let a = ((*bytes as u64) << 16) | ((*bytes.offset(1) as u64) << 8) |
-            (*bytes.offset(1) as u64);
+        let a =
+            ((*bytes as u64) << 16) | ((*bytes.offset(1) as u64) << 8) | (*bytes.offset(1) as u64);
         mix(S0 ^ 2u64, mix(a ^ S0, 0 ^ DEFAULT_SEED))
     }
 }
@@ -291,8 +298,11 @@ pub fn hash_default(data: *const u8, length: u64) -> u64 {
 
 pub fn hash_sized<T: Sized>(data: &T) -> u64 {
     unsafe {
-        hash(unsafe { data as *const T as *const u8 },
-             mem::size_of::<T>() as u64, DEFAULT_SEED)
+        hash(
+            unsafe { data as *const T as *const u8 },
+            mem::size_of::<T>() as u64,
+            DEFAULT_SEED,
+        )
     }
 }
 
@@ -327,12 +337,12 @@ pub unsafe fn hash(data: *const u8, length: u64, mut seed: u64) -> u64 {
     if length <= 16 {
         if length >= 4 {
             a = read32(bytes) << 32 | read32(bytes.offset(((length >> 3) << 2) as isize));
-            b = read32(bytes.offset((length - 4) as isize)) << 32 |
-                read32(bytes.offset((length - 4 - ((length >> 3) << 2)) as isize))
+            b = read32(bytes.offset((length - 4) as isize)) << 32
+                | read32(bytes.offset((length - 4 - ((length >> 3) << 2)) as isize))
         } else if length > 0 {
-            a = ((*bytes as u64) << 16) |
-                ((*bytes.offset((length >> 1) as isize) as u64) << 8) |
-                ((*bytes.offset((length - 1) as isize)) as u64);
+            a = ((*bytes as u64) << 16)
+                | ((*bytes.offset((length >> 1) as isize) as u64) << 8)
+                | ((*bytes.offset((length - 1) as isize)) as u64);
         }
     } else {
         let mut index: isize = length as isize;
@@ -341,8 +351,14 @@ pub unsafe fn hash(data: *const u8, length: u64, mut seed: u64) -> u64 {
             let mut see2 = seed;
             while index > 48 {
                 seed = mix(read64(bytes) ^ S1, read64(bytes.offset(8)) ^ seed);
-                see1 = mix(read64(bytes.offset(16)) ^ S2, read64(bytes.offset(24)) ^ see1);
-                see2 = mix(read64(bytes.offset(32)) ^ S3, read64(bytes.offset(40)) ^ see2);
+                see1 = mix(
+                    read64(bytes.offset(16)) ^ S2,
+                    read64(bytes.offset(24)) ^ see1,
+                );
+                see2 = mix(
+                    read64(bytes.offset(32)) ^ S3,
+                    read64(bytes.offset(40)) ^ see2,
+                );
                 bytes = bytes.offset(48);
                 index -= 48;
             }
@@ -356,8 +372,8 @@ pub unsafe fn hash(data: *const u8, length: u64, mut seed: u64) -> u64 {
             bytes = bytes.offset(16);
         }
 
-        a = read64(bytes.offset(index-16));
-        b = read64(bytes.offset(index-8));
+        a = read64(bytes.offset(index - 16));
+        b = read64(bytes.offset(index - 8));
     }
     a ^= S1;
     b ^= seed;
@@ -368,13 +384,14 @@ pub unsafe fn hash(data: *const u8, length: u64, mut seed: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
     // use criterion::Bencher;
     use super::*;
-    use test::{Bencher, black_box};
+    // use test::{Bencher, black_box};
 
     fn print_hash(s: &str) {
-        println!("{}: {}", s, unsafe { hash(s.as_ptr(), s.len() as u64, DEFAULT_SEED) });
+        println!("{}: {}", s, unsafe {
+            hash(s.as_ptr(), s.len() as u64, DEFAULT_SEED)
+        });
     }
 
     #[inline(always)]
@@ -437,59 +454,59 @@ mod tests {
     #[test]
     fn test_mix() {
         /*
+                55000000000
+        5494308139885387899
+        5345491536366109532
+        h: 11372757148569077325
+        he: 3477181882470878621
+        hel: 205587233836623031
+        hell: 3508237342570683138
+        hello: 18063072054746964485
+        hellonow: 9731530904021028703
+
         55000000000
-5494308139885387899
-5345491536366109532
-h: 11372757148569077325
-he: 3477181882470878621
-hel: 205587233836623031
-hell: 3508237342570683138
-hello: 18063072054746964485
-hellonow: 9731530904021028703
+        5169300521685052069
+        16238366866855921188
+        h: 6780574694009273394
+        he: 8834066196113654930
+        hel: 12533521325614852376
+        hell: 12299660955645589691
+        hello: 17947492129529633476
+        hellonow: 5191492153603243908
 
-55000000000
-5169300521685052069
-16238366866855921188
-h: 6780574694009273394
-he: 8834066196113654930
-hel: 12533521325614852376
-hell: 12299660955645589691
-hello: 17947492129529633476
-hellonow: 5191492153603243908
-
-55000000000
-5494308139885387899
-5345491536366109532
-h: 11372757148569077325
-he: 3477181882470878621
-hel: 205587233836623031
-hell: 3508237342570683138
-hello: 18063072054746964485
-hellonow: 9731530904021028703
+        55000000000
+        5494308139885387899
+        5345491536366109532
+        h: 11372757148569077325
+        he: 3477181882470878621
+        hel: 205587233836623031
+        hell: 3508237342570683138
+        hello: 18063072054746964485
+        hellonow: 9731530904021028703
 
 
-slow 8:   302552443158788326
-fast 8:   302552443158788326
-slow 16:  3758746017593598189
-fast 16:  3758746017593598189
-slow 32:  7014248027183658539
-fast 32:  7014248027183658539
-slow 64:  5169300521685052069
-fast 64:  5169300521685052069
-slow 128: 16143610639894312455
-fast 128: 16143610639894312455
+        slow 8:   302552443158788326
+        fast 8:   302552443158788326
+        slow 16:  3758746017593598189
+        fast 16:  3758746017593598189
+        slow 32:  7014248027183658539
+        fast 32:  7014248027183658539
+        slow 64:  5169300521685052069
+        fast 64:  5169300521685052069
+        slow 128: 16143610639894312455
+        fast 128: 16143610639894312455
 
-slow 8:   11939746742026218111
-fast 8:   11939746742026218111
-slow 16:  12427447927239978758
-fast 16:  12427447927239978758
-slow 32:  7824924462328316757
-fast 32:  7824924462328316757
-slow 64:  5494308139885387899
-fast 64:  5494308139885387899
-slow 128: 11146129279368452504
-fast 128: 11146129279368452504
-         */
+        slow 8:   11939746742026218111
+        fast 8:   11939746742026218111
+        slow 16:  12427447927239978758
+        fast 16:  12427447927239978758
+        slow 32:  7824924462328316757
+        fast 32:  7824924462328316757
+        slow 64:  5494308139885387899
+        fast 64:  5494308139885387899
+        slow 128: 11146129279368452504
+        fast 128: 11146129279368452504
+                 */
         println!("{:}", mix(5000000000, 11));
         println!("{:}", hash_u64(10));
         println!("{:}", hash_u64(11));
@@ -510,54 +527,54 @@ fast 128: 11146129279368452504
         print_hash("hellonowwowowowowow");
     }
 
-    #[bench]
-    fn bench_u64(b: &mut Bencher) {
-        let mut rand = Rand::new(DEFAULT_SEED);
-
-        // test::black_box(|| {
-        //     b.iter(|| {
-        //         "hello".wap_hash();
-        //     });
-        // });
-
-        black_box(hash);
-        black_box(hash_u8);
-        black_box(hash_u16);
-        black_box(hash_u32);
-        // black_box(hash_u64);
-
-        let xx = AtomicU64::new(0);
-
-        b.iter(move || {
-            let mut h = 0;
-            for i in 1u64..1000u64 {
-                h += hash_u64(i * i);
-                // h += (i*i).hash_wap();
-                // (i*i).hash_wap();
-
-                // if i % 2 == 0 {
-                //
-                //     let v = "hello";
-                //     unsafe { hash(v.as_ptr(), v.len() as u64, DEFAULT_SEED); }
-                // } else {
-                //     let v = "hellp";
-                //     unsafe { hash(v.as_ptr(), v.len() as u64, DEFAULT_SEED); }
-                // }
-                // if i % 10 == 0 {
-                //     rand.next();
-                // }
-                // if i&2047 == 1 {
-                //     // h += rand.next();
-                //     h = xx.fetch_add(h, Ordering::Relaxed);
-                // }
-            }
-
-            if h & 1023 == 0 {
-                // h += rand.next();
-                h = xx.fetch_add(h, Ordering::Relaxed);
-            }
-
-            // println!("{:}", h);
-        });
-    }
+    // #[bench]
+    // fn bench_u64(b: &mut Bencher) {
+    //     let mut rand = Rand::new(DEFAULT_SEED);
+    //
+    //     // test::black_box(|| {
+    //     //     b.iter(|| {
+    //     //         "hello".wap_hash();
+    //     //     });
+    //     // });
+    //
+    //     black_box(hash);
+    //     black_box(hash_u8);
+    //     black_box(hash_u16);
+    //     black_box(hash_u32);
+    //     // black_box(hash_u64);
+    //
+    //     let xx = AtomicU64::new(0);
+    //
+    //     b.iter(move || {
+    //         let mut h = 0;
+    //         for i in 1u64..1000u64 {
+    //             h += hash_u64(i * i);
+    //             // h += (i*i).hash_wap();
+    //             // (i*i).hash_wap();
+    //
+    //             // if i % 2 == 0 {
+    //             //
+    //             //     let v = "hello";
+    //             //     unsafe { hash(v.as_ptr(), v.len() as u64, DEFAULT_SEED); }
+    //             // } else {
+    //             //     let v = "hellp";
+    //             //     unsafe { hash(v.as_ptr(), v.len() as u64, DEFAULT_SEED); }
+    //             // }
+    //             // if i % 10 == 0 {
+    //             //     rand.next();
+    //             // }
+    //             // if i&2047 == 1 {
+    //             //     // h += rand.next();
+    //             //     h = xx.fetch_add(h, Ordering::Relaxed);
+    //             // }
+    //         }
+    //
+    //         if h & 1023 == 0 {
+    //             // h += rand.next();
+    //             h = xx.fetch_add(h, Ordering::Relaxed);
+    //         }
+    //
+    //         // println!("{:}", h);
+    //     });
+    // }
 }

@@ -2,6 +2,7 @@ use core::marker::PhantomData;
 use core::mem;
 use core::ops::{Deref, DerefMut};
 use core::ptr;
+use std::intrinsics::unlikely;
 
 use crate::alloc::{Allocator, Global, Grow, TruncResult};
 use crate::block::Block;
@@ -35,7 +36,7 @@ pub trait Message {
 
 pub trait Flex: Message {}
 
-pub trait Box: Deref<Target=Self::Root> {
+pub trait MsgBox: Deref<Target=Self::Root> {
     type Header: Header;
     type Message: Message;
     type Allocator: Allocator;
@@ -59,7 +60,7 @@ pub trait Box: Deref<Target=Self::Root> {
     }
 }
 
-pub trait BoxMut: Box + DerefMut {
+pub trait MessageBoxMut: MsgBox + DerefMut {
     #[inline(always)]
     fn header_mut(&mut self) -> &mut Self::Header {
         unsafe { &mut *(self.base_ptr().offset(-Self::Header::SIZE) as *mut Self::Header) }
@@ -72,6 +73,8 @@ pub trait RootBuilder<B: Builder>: Sized {
     fn finish(self) -> Safe<B::Message, B::Allocator>;
 }
 
+/// Builder manages a dynamic underlying buffer rather than a fixed buffer for
+/// messages that contain dynamically sized types like strings, arrays, maps, etc.
 pub trait Builder: Sized {
     type Message: Message;
     type Header: Header;
@@ -222,7 +225,7 @@ pub struct Safe<M: Message, A: Allocator = Global> {
 impl<M: Message, A: Allocator> Clone for Safe<M, A> {
     fn clone(&self) -> Self {
         let p = A::allocate(self.size());
-        if p == ptr::null_mut() {
+        if unlikely(p == ptr::null_mut()) {
             panic!("Out of memory");
         } else {
             unsafe {
@@ -271,7 +274,7 @@ impl<M: Message, A: Allocator> Deref for Safe<M, A> {
     }
 }
 
-impl<M: Message, A: Allocator> Box for Safe<M, A> {
+impl<M: Message, A: Allocator> MsgBox for Safe<M, A> {
     type Header = M::Header;
     type Message = M;
     type Allocator = A;
@@ -364,7 +367,7 @@ impl<M: Message, A: Allocator> DerefMut for SafeMut<M, A> {
     }
 }
 
-impl<M: Message, A: Allocator> Box for SafeMut<M, A> {
+impl<M: Message, A: Allocator> MsgBox for SafeMut<M, A> {
     type Header = M::Header;
     type Message = M;
     type Allocator = A;
@@ -376,7 +379,7 @@ impl<M: Message, A: Allocator> Box for SafeMut<M, A> {
     }
 }
 
-impl<M: Message, A: Allocator> BoxMut for SafeMut<M, A> {}
+impl<M: Message, A: Allocator> MessageBoxMut for SafeMut<M, A> {}
 
 impl<M: Message, A: Allocator> Drop for SafeMut<M, A> {
     fn drop(&mut self) {
@@ -428,7 +431,7 @@ impl<M: Message, A: Allocator> DerefMut for Unsafe<M, A> {
     }
 }
 
-impl<M: Message, A: Allocator> Box for Unsafe<M, A> {
+impl<M: Message, A: Allocator> MsgBox for Unsafe<M, A> {
     type Header = M::Header;
     type Message = M;
     type Allocator = A;
@@ -494,7 +497,7 @@ impl<M: Message, A: Allocator> DerefMut for UnsafeMut<M, A> {
     }
 }
 
-impl<M: Message, A: Allocator> Box for UnsafeMut<M, A> {
+impl<M: Message, A: Allocator> MsgBox for UnsafeMut<M, A> {
     type Header = M::Header;
     type Message = M;
     type Allocator = A;
@@ -874,7 +877,8 @@ mod tests {
     }
 
     impl<R: Message> Order for OrderSafe<R> {
-        type Price = impl Price;
+        // type Price = impl Price;
+        type Price = PriceSafe<R>;
 
         fn id(&self) -> u64 {
             unsafe { (&*(self.base)).id }
@@ -1070,7 +1074,7 @@ mod tests {
         #[inline(always)]
         fn close(&self) -> f64 {
             unsafe {
-                if self.0.offset(32) as usize > self.1 as usize { 0f64 } else { (&*(self.0 as *const PriceData)).close() }
+                if unlikely(self.0.offset(32) as usize > self.1 as usize) { 0f64 } else { (&*(self.0 as *const PriceData)).close() }
             }
         }
 
@@ -1191,7 +1195,7 @@ mod tests {
         o.price_mut().set_low(11.0);
     }
 
-    fn build_order() -> impl Box<Root=impl Order> {
+    fn build_order() -> impl MsgBox<Root=impl Order> {
         // fn build_order() -> Safe<OrderMessage> {
         // let mut o = OrderMessage::new().unwrap();
         let mut o = OrderMessage::new_builder(0).unwrap();

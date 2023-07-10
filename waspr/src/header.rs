@@ -76,7 +76,7 @@ impl<T: Sized> Header for Only<T> {
     }
 }
 
-pub trait Header16 {}
+pub trait Header16: Header {}
 
 pub trait Header32 {}
 

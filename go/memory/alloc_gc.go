@@ -11,8 +11,8 @@ func mallocgc(size uintptr, typ unsafe.Pointer, needzero bool) unsafe.Pointer
 
 func GCAlloc(size uintptr) unsafe.Pointer {
 	return mallocgc(size, nil, false)
-	//b := make([]byte, size)
-	//return unsafe.Pointer(&b[0])
+	// b := make([]byte, size)
+	// return unsafe.Pointer(&b[0])
 }
 
 func GCAllocZeroed(size uintptr) unsafe.Pointer {

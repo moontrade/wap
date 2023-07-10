@@ -2,10 +2,11 @@ package parser
 
 import (
 	"fmt"
-	"github.com/moontrade/wap/go/memory"
 	"runtime"
 	"testing"
 	"unsafe"
+
+	"github.com/moontrade/wap/go/memory"
 )
 
 //func isEmpty[B string | []byte](p B) bool {

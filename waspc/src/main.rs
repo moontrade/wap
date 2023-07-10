@@ -1,8 +1,8 @@
-#![feature(test)]
-#![feature(bigint_helper_methods)]
+// #![feature(test)]
+// #![feature(bigint_helper_methods)]
 #![allow(unused)]
 #![allow(unused_imports)]
-extern crate test;
+// extern crate test;
 
 #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
 #[global_allocator]
@@ -17,7 +17,6 @@ static A: rpmalloc::RpMalloc = rpmalloc::RpMalloc;
 
 // extern crate arrow;
 
-use std::sync::Arc;
 
 // use arrow::array::{
 //     Array, ArrayData, BooleanArray, Int32Array, Int32Builder, ListArray, PrimitiveArray,
@@ -26,22 +25,20 @@ use std::sync::Arc;
 // use arrow::buffer::Buffer;
 // use arrow::datatypes::{DataType, Date64Type, Field, Time64NanosecondType, ToByteSlice};
 
-
-mod hash;
-mod parser;
-mod model;
-mod linker;
 mod go;
+mod hash;
+mod linker;
+mod model;
+mod parser;
 mod rust;
 
 use std::alloc::{alloc, dealloc, GlobalAlloc, Layout};
 use std::future::Future;
-use std::path::Path;
 use std::io::Read;
+use std::path::Path;
 // use wapr::hash;
-use futures::executor::block_on;
 use crate::parser::Parser;
-
+use futures::executor::block_on;
 
 // Use `wee_alloc` as the global allocator.
 // #[global_allocator]
@@ -54,7 +51,7 @@ async fn foo() -> u8 {
     5
 }
 
-fn bar() -> impl Future<Output=u8> {
+fn bar() -> impl Future<Output = u8> {
     // This `async` block results in a type that implements
     // `Future<Output = u8>`.
     async {
@@ -90,7 +87,7 @@ fn print_hash(s: &str) {
 }
 
 pub fn main() -> anyhow::Result<()> {
-// pub fn main() -> Result<(), ()> {
+    // pub fn main() -> Result<(), ()> {
     // print_hash("h");
     // print_hash("he");
     // print_hash("hel");
@@ -139,7 +136,6 @@ pub fn main() -> anyhow::Result<()> {
     //         println!("{}", reason.to_string());
     //     }
     // }
-
 
     // Primitive Arrays
     //
@@ -242,7 +238,6 @@ pub fn main() -> anyhow::Result<()> {
     //     ),
     // ]);
     // println!("{struct_array:?}");
-
 
     Ok(())
 

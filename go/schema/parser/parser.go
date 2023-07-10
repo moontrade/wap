@@ -481,7 +481,6 @@ func (p *Parser) Parse() error {
 
 		case "protocol":
 			if !p.nextWord() {
-
 			}
 
 			fmt.Println("protocol:", p.word())
@@ -1704,7 +1703,7 @@ func (p *Parser) parseObjectValue(t *Type) (*Object, bool) {
 
 	object := &Object{Curly: true}
 
-	var success = false
+	success := false
 	endCharacter := "}"
 	switch p.word() {
 	case "{":

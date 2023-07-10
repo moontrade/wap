@@ -1,209 +1,17 @@
-use std::{mem, ptr};
-use std::borrow::BorrowMut;
-// use std::collections::{HashMap};
+use std::borrow::ToOwned;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::fmt;
 use std::marker::PhantomData;
-use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::ptr::{null, null_mut};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
+use std::result::Result;
+use std::sync::PoisonError;
 
-use anyhow::Error;
+use thiserror::Error;
 
-pub struct ModuleInner<'a> {
-    pub full_name: String,
-    pub name: String,
-    types: Vec<Type<'a>>,
-    inner: Vec<&'a Type<'a>>,
-    values: Vec<Value<'a>>,
-}
-
-pub struct Module<'a> {
-    pub schema: String,
-    pub root: Type<'a>,
-    pub inner: Rc<ModuleInner<'a>>,
-    _marker: PhantomData<(&'a ())>,
-}
-
-impl<'a> Module<'a> {
-    pub(crate) fn new(schema: String) -> Self {
-        let mut inner = Rc::new(ModuleInner {
-            full_name: String::from(EMPTY),
-            name: String::from(EMPTY),
-            types: vec![],
-            inner: vec![],
-            values: vec![],
-        });
-        Self {
-            schema,
-            root: Type::new(inner.clone(), None),
-            inner,
-            _marker: PhantomData,
-        }
-    }
-
-    pub fn set_full_name(&mut self, value: String) {
-        self.root_mut().module_mut().full_name = value;
-        // self.inner.full_name = value;
-    }
-
-    pub fn set_name(&mut self, value: String) {
-        self.root_mut().module_mut().name = value;
-        // self.inner.name = value;
-    }
-
-    pub fn types_iter(&self) -> impl Iterator<Item=&Type<'a>> {
-        self.inner.types.iter()
-    }
-
-    pub fn root(&mut self) -> &Type<'a> {
-        &self.root
-    }
-
-    pub fn root_mut(&mut self) -> &mut Type<'a> {
-        &mut self.root
-    }
-
-    pub fn new_alias(&mut self, name: &str, of: Option<&'a Type<'a>>) -> &'a mut Alias<'a> {
-        let a = (unsafe { &mut *(self as *mut Self) }).root_mut().new_alias(name.to_owned(), of);
-        self.root.module_mut().inner.push(a.this());
-        a
-    }
-
-    // pub fn new_enum(&mut self, name: &'a str, of: Option<&'a Type<'a>>, comments: Option<Comment>) -> &mut Enum<'a> {
-    //     let e = (unsafe { &mut *(self as *mut Self) }).root_mut().new_enum(name, of, comments);
-    //     self.inner.push(e.this());
-    //     e
-    // }
-
-    pub fn new_struct(&mut self) -> &'a mut Struct<'a> {
-        let s = (unsafe { &mut *(self as *mut Self) }).root_mut().new_struct(StructKind::Struct);
-        self.root.module_mut().inner.push(s.this());
-        s
-    }
-
-    pub fn new_union(&mut self) -> &'a mut Struct<'a> {
-        let u = (unsafe { &mut *(self as *mut Self) }).root_mut().new_struct(StructKind::Union);
-        self.root.module_mut().inner.push(u.this());
-        u
-    }
-
-    pub fn new_variant(&mut self) -> &'a mut Struct<'a> {
-        let u = (unsafe { &mut *(self as *mut Self) }).root_mut().new_struct(StructKind::Variant);
-        self.root.module_mut().inner.push(u.this());
-        u
-    }
-}
-
-#[derive(Clone)]
-pub enum Kind<'a> {
-    Empty,
-    // Module(&'a Module<'a>),
-    Module(Rc<ModuleInner<'a>>),
-    Unknown(Unknown<'a>),
-    Const(Const<'a>),
-    Alias(Alias<'a>),
-    Padding(Padding<'a>),
-    Bool,
-    I8,
-    U8,
-    I16(Number<'a>),
-    U16(Number<'a>),
-    I32(Number<'a>),
-    U32(Number<'a>),
-    I64(Number<'a>),
-    U64(Number<'a>),
-    I128(Number<'a>),
-    U128(Number<'a>),
-    F32(Number<'a>),
-    F64(Number<'a>),
-    // F128(Number<'a>),
-    // heap allocated string
-    String(Str<'a>),
-    // string embedded inline
-    StringInline(Str<'a>),
-    // string embedded inline with a heap allocated spill-over
-    StringInlinePlus(Str<'a>),
-    Optional(Optional<'a>),
-    Pointer(Pointer<'a>),
-    Enum(Enum<'a>),
-    EnumOption(EnumOption<'a>),
-    Struct(Struct<'a>),
-    Field(Field<'a>),
-    Union(Struct<'a>),
-    Variant(Struct<'a>),
-    Array(Array<'a>),
-    ArrayVector(ArrayVector<'a>),
-    Vector(Vector<'a>),
-    // robin-hood flat map
-    Map(Map<'a>),
-    Set(Map<'a>),
-    // B+Tree
-    BTreeMap(Map<'a>),
-    BTreeSet(Map<'a>),
-    NodeMap(Map<'a>),
-    NodeSet(Map<'a>),
-    // ART radix tree
-    RadixMap(Map<'a>),
-    RadixSet(Map<'a>),
-    RTree,
-    HyperLogLog,
-}
-
-impl<'a> Kind<'a> {
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            Kind::Empty => "<EMPTY>",
-            Kind::Module(_) => "mod",
-            Kind::Unknown(_) => "unknown",
-            Kind::Bool => "bool",
-            Kind::I8 => "i8",
-            Kind::U8 => "u8",
-            Kind::I16(_) => "i16",
-            Kind::U16(_) => "u16",
-            Kind::I32(_) => "i32",
-            Kind::U32(_) => "u32",
-            Kind::I64(_) => "i64",
-            Kind::U64(_) => "u64",
-            Kind::I128(_) => "i128",
-            Kind::U128(_) => "u128",
-            Kind::F32(_) => "f32",
-            Kind::F64(_) => "f64",
-            // Kind::F128(_) => "f128",
-            Kind::String(_) => "string",
-            Kind::StringInline(_) => "string{0}",
-            Kind::StringInlinePlus(_) => "string{0}..",
-            Kind::Optional(_) => "optional",
-            Kind::Pointer(_) => "pointer",
-            Kind::Enum(_) => "enum",
-            Kind::EnumOption(_) => "enum_option",
-            Kind::Struct(_) => "struct",
-            Kind::Field(_) => "field",
-            Kind::Union(_) => "union",
-            Kind::Variant(_) => "variant",
-            Kind::Array(_) => "array",
-            Kind::ArrayVector(_) => "array..",
-            Kind::Vector(_) => "vector",
-            Kind::Map(_) => "flat_map",
-            Kind::NodeMap(_) => "node_map",
-            Kind::Set(_) => "flat_set",
-            Kind::NodeSet(_) => "node_set",
-            Kind::RadixMap(_) => "ordered_map",
-            Kind::RadixSet(_) => "ordered_set",
-            Kind::BTreeMap(_) => "tree_map",
-            Kind::BTreeSet(_) => "tree_set",
-            Kind::Const(_) => "const",
-            Kind::Alias(_) => "alias",
-            Kind::Padding(_) => "padding ..",
-            _ => ""
-        }
-    }
-
-    pub fn name(&self) -> &'a str {
-        match self {
-            _ => "",
-        }
-    }
-}
+type ModelResult<T> = Result<T, ModelError>;
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct Position {
@@ -218,27 +26,1232 @@ impl Position {
     }
 }
 
-pub struct Attributes {
-    current: Vec<Attribute>,
+#[derive(Error, Clone, Debug)]
+pub enum ModelError {
+    #[error("max fields reached")]
+    MaxFieldsReached,
+    #[error("duplicate struct name: {0}")]
+    DuplicateName(String),
+    #[error("duplicate field name: {0}::{1}")]
+    DuplicateFieldName(String, String),
+    #[error("field kind not set for: {0}::{1}")]
+    FieldKindNotSet(String, String),
+    #[error("enums must be an integer type: i8, i16, i32, i64, i128, u8, u16, u32, u64, u128")]
+    EnumMustBeIntegerType,
+    #[error(
+        "Cyclic dependency between: {0} and {1}. Cannot embed. Must use Pointer (*) of the types."
+    )]
+    CyclicDependency(String, String),
+    #[error("invalid parent kind: {0} must be Struct, Module, Const, Alias, Field")]
+    InvalidParentKind(String),
+    #[error("type alias: {0} must be nested either in a module or struct")]
+    InvalidAliasParent(String),
 }
 
-impl Attributes {
-    // pub fn push(&mut self)
+// impl fmt::Display for AddFieldError {
+//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+//         match self {
+//             AddFieldError::MaxFieldsReached => {
+//                 write!(f, "max fields reached")
+//             }
+//             AddFieldError::DuplicateName(_) => {
+//                 write!(f, "name already used")
+//             }
+//         }
+//     }
+// }
+
+// impl fmt::Display for ModelError {
+//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+//         write!(f, "invalid first item to double")
+//     }
+// }
+
+#[derive(Clone, Debug)]
+pub struct Module {
+    this: Option<Weak<RefCell<Module>>>,
+    full_name: Option<String>,
+    schema: Option<String>,
+    imports: Imports,
+    children: Children,
 }
 
-pub struct Attribute {
+impl Module {
+    pub fn new(schema: Option<String>) -> Ref<Self> {
+        let m = Rc::new(RefCell::new(Self {
+            this: None,
+            full_name: None,
+            schema,
+            imports: Imports::new(),
+            children: Children::new(ParentKind::None),
+        }));
+        m.borrow_mut().this = Some(Rc::downgrade(&m));
+        m.borrow_mut().children.parent = ParentKind::Module(Ref::Weak(Rc::downgrade(&m)));
+        Ref::Strong(m)
+    }
+
+    #[inline]
+    pub fn children(&self) -> &Children {
+        &self.children
+    }
+
+    #[inline]
+    pub fn add_alias(&mut self, name: String, kind: Kind) -> ModelResult<Ref<Alias>> {
+        self.children.add_alias(name, kind)
+    }
+
+    #[inline]
+    pub fn add_struct(
+        &mut self,
+        name: Option<String>,
+        kind: StructKind,
+    ) -> ModelResult<Ref<Struct>> {
+        self.children.add_struct(name, kind)
+    }
+
+    #[inline]
+    pub fn add_enum(&mut self, name: Option<String>) -> ModelResult<Ref<Enum>> {
+        self.children.add_enum(name)
+    }
+
+    #[inline]
+    pub fn add_const(&mut self, name: String) -> ModelResult<Ref<Const>> {
+        self.children.add_const(Some(name))
+    }
+
+    pub fn full_name(&self) -> &Option<String> {
+        &self.full_name
+    }
+    pub fn schema(&self) -> &Option<String> {
+        &self.schema
+    }
+    pub fn set_full_name(&mut self, full_name: Option<String>) {
+        self.full_name = full_name;
+    }
+    pub fn set_schema(&mut self, schema: Option<String>) {
+        self.schema = schema;
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Imports {
+    list: Vec<Ref<Import>>,
+    map: HashMap<String, Ref<Import>>,
+}
+
+impl Imports {
+    pub fn new() -> Self {
+        Self {
+            list: Vec::new(),
+            map: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Children {
+    parent: ParentKind,
+    list: Vec<Kind>,
+    map: HashMap<String, Kind>,
+}
+
+impl Children {
+    pub fn new(parent: ParentKind) -> Self {
+        Self {
+            parent,
+            list: Vec::new(),
+            map: HashMap::new(),
+        }
+    }
+
+    fn push(&mut self, kind: Kind) {
+        self.list.push(kind);
+    }
+
+    pub fn len(&self) -> usize {
+        self.list.len()
+    }
+
+    pub fn add_alias(&mut self, name: String, kind: Kind) -> ModelResult<Ref<Alias>> {
+        let mut alias = Rc::new(RefCell::new(Alias::new(
+            self.parent.clone_weak(),
+            name.clone(),
+            kind,
+        )));
+        alias.borrow_mut().this = Some(Rc::downgrade(&alias));
+        self.list.push(Kind::Alias(Ref::Strong(Rc::clone(&alias))));
+        self.map
+            .insert(name.clone(), Kind::Alias(Ref::Weak(Rc::downgrade(&alias))));
+        Ok(Ref::Strong(alias))
+    }
+
+    pub fn add_struct(
+        &mut self,
+        name: Option<String>,
+        flavor: StructKind,
+    ) -> ModelResult<Ref<Struct>> {
+        let mut s = Rc::new(RefCell::new(Struct::new(self.parent.clone_weak(), flavor)));
+        s.borrow_mut().this = Some(Rc::downgrade(&s));
+        s.borrow_mut()
+            .set_name(name.clone().unwrap_or_else(|| "".to_owned()));
+        s.borrow_mut().kind = flavor;
+        self.list.push(Kind::Struct(Ref::Strong(Rc::clone(&s))));
+        let n = name.unwrap_or_else(|| "".to_owned());
+        self.map
+            .insert(n, Kind::Struct(Ref::Weak(Rc::downgrade(&s))));
+        Ok(Ref::Strong(s))
+    }
+
+    pub fn add_enum(&mut self, name: Option<String>) -> ModelResult<Ref<Enum>> {
+        let mut e = Rc::new(RefCell::new(Enum::new(self.parent.clone_weak())));
+        e.borrow_mut().this = Some(Rc::downgrade(&e));
+        e.borrow_mut().name = name.clone();
+        self.list.push(Kind::Enum(Ref::Strong(Rc::clone(&e))));
+        self.map.insert(
+            name.unwrap_or_else(|| "".to_owned()),
+            Kind::Enum(Ref::Weak(Rc::downgrade(&e))),
+        );
+        Ok(Ref::Strong(e))
+    }
+
+    pub fn add_const(&mut self, name: Option<String>) -> ModelResult<Ref<Const>> {
+        let mut c = Rc::new(RefCell::new(Const::new(self.parent.clone_weak())));
+        c.borrow_mut().this = Some(Rc::downgrade(&c));
+        c.borrow_mut().name = name.clone();
+        self.list.push(Kind::Const(Ref::Strong(Rc::clone(&c))));
+        self.map.insert(
+            name.unwrap_or_else(|| "".to_owned()),
+            Kind::Const(Ref::Weak(Rc::downgrade(&c))),
+        );
+        Ok(Ref::Strong(c))
+    }
+
+    pub fn structs(&self) -> impl Iterator<Item = &Struct> {
+        self.list
+            .iter()
+            .filter(|it| matches!(it, Kind::Struct(_)))
+            .map(|it| match it {
+                Kind::Struct(ref s) => s.borrow().unwrap(),
+                _ => unreachable!(),
+            })
+    }
+
+    pub fn structs_mut(&mut self) -> impl Iterator<Item = &mut Struct> {
+        self.list
+            .iter_mut()
+            .filter(|it| matches!(it, Kind::Struct(_)))
+            .map(|it| match it {
+                Kind::Struct(ref mut s) => s.borrow_mut().unwrap(),
+                _ => unreachable!(),
+            })
+    }
+
+    pub fn structs_len(&self) -> usize {
+        self.structs().count()
+    }
+
+    pub fn enums(&self) -> impl Iterator<Item = &Ref<Enum>> {
+        self.list
+            .iter()
+            .filter(|it| matches!(it, Kind::Enum(_)))
+            .map(|it| match it {
+                Kind::Enum(ref s) => s,
+                _ => unreachable!(),
+            })
+    }
+
+    pub fn enums_mut(&mut self) -> impl Iterator<Item = &mut Enum> {
+        self.list
+            .iter_mut()
+            .filter(|it| matches!(it, Kind::Enum(_)))
+            .map(|it| match it {
+                Kind::Enum(ref mut e) => e.borrow_mut().unwrap(),
+                _ => unreachable!(),
+            })
+    }
+
+    pub fn enums_len(&self) -> usize {
+        self.enums().count()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ParentKind {
+    None,
+    Module(Ref<Module>),
+    Struct(Ref<Struct>),
+    Const(Ref<Const>),
+    Alias(Ref<Alias>),
+    Field(Ref<Field>),
+}
+
+impl ParentKind {
+    pub fn kind(&self) -> Kind {
+        match self {
+            ParentKind::None => Kind::None,
+            ParentKind::Module(m) => Kind::Module(m.clone()),
+            ParentKind::Struct(s) => Kind::Struct(s.clone()),
+            ParentKind::Const(c) => Kind::Const(c.clone()),
+            ParentKind::Alias(a) => Kind::Alias(a.clone()),
+            ParentKind::Field(f) => Kind::Field(f.clone()),
+        }
+    }
+
+    pub fn clone_weak(&self) -> Self {
+        match self {
+            ParentKind::None => ParentKind::None,
+            ParentKind::Module(m) => ParentKind::Module(Ref::Weak(m.downgrade())),
+            ParentKind::Struct(s) => ParentKind::Struct(Ref::Weak(s.downgrade())),
+            ParentKind::Const(c) => ParentKind::Const(Ref::Weak(c.downgrade())),
+            ParentKind::Alias(a) => ParentKind::Alias(Ref::Weak(a.downgrade())),
+            ParentKind::Field(f) => ParentKind::Field(Ref::Weak(f.downgrade())),
+        }
+    }
+
+    pub fn clone_strong(&self) -> Self {
+        match self {
+            ParentKind::None => ParentKind::None,
+            ParentKind::Module(m) => ParentKind::Module(Ref::Strong(m.upgrade().unwrap())),
+            ParentKind::Struct(s) => ParentKind::Struct(Ref::Strong(s.upgrade().unwrap())),
+            ParentKind::Const(c) => ParentKind::Const(Ref::Strong(c.upgrade().unwrap())),
+            ParentKind::Alias(a) => ParentKind::Alias(Ref::Strong(a.upgrade().unwrap())),
+            ParentKind::Field(f) => ParentKind::Field(Ref::Strong(f.upgrade().unwrap())),
+        }
+    }
+
+    pub fn is_module(&self) -> bool {
+        matches!(self, ParentKind::Module(_))
+    }
+
+    pub fn is_struct(&self) -> bool {
+        matches!(self, ParentKind::Struct(_))
+    }
+
+    pub fn is_const(&self) -> bool {
+        matches!(self, ParentKind::Const(_))
+    }
+
+    pub fn is_alias(&self) -> bool {
+        matches!(self, ParentKind::Alias(_))
+    }
+
+    pub fn is_field(&self) -> bool {
+        matches!(self, ParentKind::Field(_))
+    }
+
+    // pub fn children_mut(&mut self) -> Option<&mut Children> {
+    //     match self {
+    //         ParentKind::None => None,
+    //         ParentKind::Module(m) => Some(&mut m.as_mut().children),
+    //         ParentKind::Struct(s) => s.as_mut().ensure_children(),
+    //     }
+    // }
+}
+
+#[derive(Clone, Debug)]
+pub enum Ref<T> {
+    /// Strong reference
+    Strong(Rc<RefCell<T>>),
+    /// Weak reference
+    Weak(Weak<RefCell<T>>),
+}
+
+impl<T> Ref<T> {
+    pub fn new(value: T) -> Ref<T> {
+        Ref::Strong(Rc::new(RefCell::new(value)))
+    }
+
+    pub fn clone_strong(&self) -> Ref<T> {
+        Ref::Strong(self.upgrade().unwrap())
+    }
+
+    pub fn clone_weak(&self) -> Ref<T> {
+        Ref::Weak(self.downgrade())
+    }
+
+    pub fn downgrade(&self) -> Weak<RefCell<T>> {
+        match self {
+            Ref::Strong(r) => Rc::downgrade(r),
+            Ref::Weak(r) => r.clone(),
+        }
+    }
+
+    pub fn upgrade(&self) -> Option<Rc<RefCell<T>>> {
+        match self {
+            Ref::Strong(r) => Some(r.clone()),
+            Ref::Weak(r) => r.upgrade(),
+        }
+    }
+
+    pub fn borrow(&self) -> Option<&T> {
+        match self {
+            Ref::Strong(r) => {
+                let raw = r.as_ptr();
+                if raw.is_null() {
+                    return None;
+                }
+                Some(unsafe { (&*raw) })
+            }
+            Ref::Weak(w) => {
+                let raw = w.as_ptr();
+                if raw.is_null() {
+                    return None;
+                }
+                Some(unsafe { (&*(raw as *mut T)) })
+            }
+        }
+    }
+
+    pub fn as_ref(&self) -> &T {
+        self.borrow().unwrap()
+    }
+
+    pub fn as_mut(&mut self) -> &mut T {
+        self.borrow_mut().unwrap()
+    }
+
+    pub fn borrow_mut(&mut self) -> Option<&mut T> {
+        match self {
+            Ref::Strong(r) => {
+                let raw = r.as_ptr();
+                if raw.is_null() {
+                    return None;
+                }
+                Some(unsafe { (&mut *raw) })
+            }
+            Ref::Weak(w) => {
+                let raw = w.as_ptr();
+                if raw.is_null() {
+                    return None;
+                }
+                Some(unsafe { (&mut *(raw as *mut T)) })
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Kind {
+    None,
+    Alias(Ref<Alias>),
+    Module(Ref<Module>),
+    Import(Ref<Import>),
+    Const(Ref<Const>),
+    Bool,
+    Int(Int),
+    Float(Float),
+    String(Str),
+    Pad(i32),
+    Struct(Ref<Struct>),
+    Field(Ref<Field>),
+    Enum(Ref<Enum>),
+    Array(Ref<Array>),
+    Map(Ref<Map>),
+    Optional(Ref<Optional>),
+    Pointer(Ref<Pointer>),
+    Unknown(String),
+}
+
+pub const I8: Kind = Kind::Int(Int::new(Endian::Little, 8, true));
+pub const I16: Kind = Kind::Int(Int::new(Endian::Little, 16, true));
+pub const I32: Kind = Kind::Int(Int::new(Endian::Little, 32, true));
+pub const I64: Kind = Kind::Int(Int::new(Endian::Little, 64, true));
+pub const I128: Kind = Kind::Int(Int::new(Endian::Little, 128, true));
+pub const I16BE: Kind = Kind::Int(Int::new(Endian::Big, 16, true));
+pub const I32BE: Kind = Kind::Int(Int::new(Endian::Big, 32, true));
+pub const I64BE: Kind = Kind::Int(Int::new(Endian::Big, 64, true));
+pub const I128BE: Kind = Kind::Int(Int::new(Endian::Big, 128, true));
+pub const U8: Kind = Kind::Int(Int::new(Endian::Little, 8, false));
+pub const U16: Kind = Kind::Int(Int::new(Endian::Little, 16, false));
+pub const U32: Kind = Kind::Int(Int::new(Endian::Little, 32, false));
+pub const U64: Kind = Kind::Int(Int::new(Endian::Little, 64, false));
+pub const U128: Kind = Kind::Int(Int::new(Endian::Little, 128, false));
+pub const U16BE: Kind = Kind::Int(Int::new(Endian::Big, 16, false));
+pub const U32BE: Kind = Kind::Int(Int::new(Endian::Big, 32, false));
+pub const U64BE: Kind = Kind::Int(Int::new(Endian::Big, 64, false));
+pub const U128BE: Kind = Kind::Int(Int::new(Endian::Big, 128, false));
+pub const F32: Kind = Kind::Float(Float::new(Endian::Little, 32));
+pub const F32BE: Kind = Kind::Float(Float::new(Endian::Big, 32));
+pub const F64: Kind = Kind::Float(Float::new(Endian::Little, 64));
+pub const F64BE: Kind = Kind::Float(Float::new(Endian::Big, 64));
+
+impl Kind {
+    pub fn size(&self) -> i32 {
+        match self {
+            Kind::None => 0,
+            Kind::Alias(a) => a.borrow().unwrap().kind.size(),
+            Kind::Const(c) => c.borrow().unwrap().kind.size(),
+            Kind::Module(_) => 0,
+            Kind::Import(im) => im.borrow().unwrap().kind.size(),
+            Kind::Int(v) => {
+                if v.bits <= 8 {
+                    1
+                } else if v.bits % 8 > 0 {
+                    (v.bits / 8) as i32 + 1
+                } else {
+                    (v.bits / 8) as i32
+                }
+            }
+            Kind::Float(v) => {
+                if v.bits <= 8 {
+                    1
+                } else if v.bits % 8 > 0 {
+                    (v.bits / 8) as i32 + 1
+                } else {
+                    (v.bits / 8) as i32
+                }
+            }
+            Kind::Pad(p) => *p,
+            Kind::Struct(s) => s.borrow().unwrap().size,
+            Kind::Field(f) => f.as_ref().size,
+            Kind::Enum(e) => e.borrow().unwrap().of.size(),
+            Kind::Array(_) => 0,
+            Kind::Map(_) => 0,
+            Kind::Bool => 1,
+            Kind::Optional(o) => 0,
+            Kind::Unknown(_) => 0,
+            Kind::String(_) => 0,
+            Kind::Pointer(_) => 0,
+        }
+    }
+
+    pub fn is_module(&self) -> bool {
+        matches!(self, Kind::Module(_))
+    }
+
+    pub fn is_struct(&self) -> bool {
+        matches!(self, Kind::Struct(_))
+    }
+
+    pub fn is_const(&self) -> bool {
+        matches!(self, Kind::Const(_))
+    }
+
+    pub fn is_alias(&self) -> bool {
+        matches!(self, Kind::Alias(_))
+    }
+
+    pub fn is_field(&self) -> bool {
+        matches!(self, Kind::Field(_))
+    }
+
+    pub fn is_optional(&self) -> bool {
+        matches!(self, Kind::Optional(_))
+    }
+
+    pub fn is_pointer(&self) -> bool {
+        matches!(self, Kind::Pointer(_))
+    }
+
+    pub fn as_parent_kind(&self) -> ModelResult<ParentKind> {
+        match self {
+            Kind::Module(m) => Ok(ParentKind::Module(m.clone_weak())),
+            Kind::Struct(s) => Ok(ParentKind::Struct(s.clone_weak())),
+            Kind::Alias(a) => Ok(ParentKind::Alias(a.clone_weak())),
+            Kind::Const(c) => Ok(ParentKind::Const(c.clone_weak())),
+            Kind::Field(f) => Ok(ParentKind::Field(f.clone_weak())),
+            _ => Err(ModelError::InvalidParentKind(format!("{:?}", self))),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Import {
+    module: Option<Ref<Module>>,
+    this: Option<Weak<RefCell<Import>>>,
+    alias: Option<String>,
+    position: Position,
+    kind: Kind,
+}
+
+impl Import {
+    pub fn new() -> Self {
+        Self {
+            module: None,
+            this: None,
+            alias: None,
+            position: Position::new(0, 0, 0),
+            kind: Kind::None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Optional {
+    kind: Option<Kind>,
+}
+
+impl Optional {
+    pub fn new(kind: Option<Kind>) -> Self {
+        Self { kind }
+    }
+    pub fn kind(&self) -> &Option<Kind> {
+        &self.kind
+    }
+    pub fn set_kind(&mut self, kind: Option<Kind>) {
+        self.kind = kind;
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Pointer {
+    parent: ParentKind,
+    this: Option<Weak<RefCell<Pointer>>>,
+    kind: Kind,
+}
+
+impl Pointer {
+    pub fn new(parent: ParentKind, kind: Kind) -> Ref<Pointer> {
+        Ref::new(Self {
+            parent,
+            this: None,
+            kind,
+        })
+    }
+
+    pub fn parent(&self) -> &ParentKind {
+        &self.parent
+    }
+    pub fn kind(&self) -> &Kind {
+        &self.kind
+    }
+
+    pub fn set_parent(&mut self, parent: ParentKind) {
+        self.parent = parent;
+    }
+    pub fn set_kind(&mut self, kind: Kind) {
+        self.kind = kind;
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Alias {
+    parent: ParentKind,
+    this: Option<Weak<RefCell<Alias>>>,
     name: String,
-    value: String,
+    kind: Kind,
 }
 
-pub struct Comments {
+impl Alias {
+    pub fn new(parent: ParentKind, name: String, kind: Kind) -> Self {
+        Self {
+            parent,
+            this: None,
+            name,
+            kind,
+        }
+    }
+
+    pub fn parent(&self) -> &ParentKind {
+        &self.parent
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn kind(&self) -> &Kind {
+        &self.kind
+    }
+
+    pub fn set_parent(&mut self, parent: ParentKind) {
+        self.parent = parent;
+    }
+    pub fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
+    pub fn set_kind(&mut self, kind: Kind) {
+        self.kind = kind;
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Str {
+    inline_size: i32,
+    inline: bool,
+    heap: bool,
+}
+
+impl Str {
+    pub fn new(inline_size: i32, inline: bool, flex: bool) -> Self {
+        Self {
+            inline_size,
+            inline,
+            heap: flex,
+        }
+    }
+
+    pub fn new_heap() -> Self {
+        Self {
+            inline_size: 0,
+            inline: false,
+            heap: true,
+        }
+    }
+
+    pub fn new_inline(size: i32) -> Self {
+        Self {
+            inline_size: size,
+            inline: true,
+            heap: false,
+        }
+    }
+
+    pub fn new_inline_heap(size: i32) -> Self {
+        Self {
+            inline_size: size,
+            inline: true,
+            heap: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Array {
+    element: Kind,
+    inline_size: i32,
+    inline: bool,
+    heap: bool,
+    fixed: bool,
+}
+
+#[derive(Clone, Debug)]
+pub enum MapKind {
+    FlatMap,
+    BTree,
+}
+
+#[derive(Clone, Debug)]
+pub struct Map {
+    name: String,
+    kind: MapKind,
+    key: Kind,
+    value: Kind,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum Endian {
+    Little,
+    Big,
+}
+
+#[derive(Clone, Debug)]
+pub struct Int {
+    endian: Endian,
+    bits: u16,
+    signed: bool,
+}
+
+impl Int {
+    pub const fn new(endian: Endian, bits: u16, signed: bool) -> Self {
+        Self {
+            endian,
+            bits,
+            signed,
+        }
+    }
+
+    pub fn is_std(&self) -> bool {
+        matches!(self.bits, 8 | 16 | 32 | 64 | 128)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Float {
+    endian: Endian,
+    bits: u16,
+}
+
+impl Float {
+    pub const fn new(endian: Endian, bits: u16) -> Self {
+        Self { endian, bits }
+    }
+
+    pub fn is_std(&self) -> bool {
+        matches!(self.bits, 8 | 16 | 32 | 64)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Enum {
+    parent: ParentKind,
+    comment: Option<Comment>,
+    name: Option<String>,
+    this: Option<Weak<RefCell<Enum>>>,
+    of: Kind,
+    options: Vec<Rc<RefCell<EnumOption>>>,
+}
+
+impl Enum {
+    fn new(parent: ParentKind) -> Self {
+        Self {
+            parent,
+            comment: None,
+            name: None,
+            this: None,
+            of: I32,
+            options: Vec::new(),
+        }
+    }
+
+    pub fn add_option(
+        &mut self,
+        comment: Option<Comment>,
+        name: String,
+        value: Value,
+    ) -> Rc<RefCell<EnumOption>> {
+        let option = Rc::new(RefCell::new(EnumOption {
+            parent: self.this.clone().unwrap(),
+            comment,
+            line_comment: None,
+            name,
+            value,
+        }));
+        self.options.push(option.clone());
+        option
+    }
+
+    pub fn parent(&self) -> &ParentKind {
+        &self.parent
+    }
+    pub fn comment(&self) -> &Option<Comment> {
+        &self.comment
+    }
+    pub fn name(&self) -> &Option<String> {
+        &self.name
+    }
+    pub fn this(&self) -> &Option<Weak<RefCell<Enum>>> {
+        &self.this
+    }
+    pub fn of(&self) -> &Kind {
+        &self.of
+    }
+    pub fn kind(&self) -> Kind {
+        Kind::Enum(Ref::Weak(self.this.clone().unwrap()))
+    }
+    pub fn options(&self) -> &Vec<Rc<RefCell<EnumOption>>> {
+        &self.options
+    }
+
+    pub fn set_comment(&mut self, comment: Option<Comment>) {
+        self.comment = comment;
+    }
+    pub fn set_name(&mut self, name: Option<String>) {
+        self.name = name;
+    }
+    pub fn set_this(&mut self, this: Option<Weak<RefCell<Enum>>>) {
+        self.this = this;
+    }
+    pub fn set_of(&mut self, kind: Kind) {
+        self.of = kind;
+    }
+    pub fn set_options(&mut self, options: Vec<Rc<RefCell<EnumOption>>>) {
+        self.options = options;
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct EnumOption {
+    parent: Weak<RefCell<Enum>>,
+    comment: Option<Comment>,
+    line_comment: Option<Comment>,
+    name: String,
+    value: Value,
+}
+
+impl EnumOption {
+    pub fn parent(&self) -> &Weak<RefCell<Enum>> {
+        &self.parent
+    }
+    pub fn comment(&self) -> &Option<Comment> {
+        &self.comment
+    }
+    pub fn line_comment(&self) -> &Option<Comment> {
+        &self.line_comment
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn value(&self) -> &Value {
+        &self.value
+    }
+
+    pub fn set_parent(&mut self, parent: Weak<RefCell<Enum>>) {
+        self.parent = parent;
+    }
+    pub fn set_comment(&mut self, comment: Option<Comment>) {
+        self.comment = comment;
+    }
+    pub fn set_line_comment(&mut self, line_comment: Option<Comment>) {
+        self.line_comment = line_comment;
+    }
+    pub fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
+    pub fn set_value(&mut self, value: Value) {
+        self.value = value;
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum StructKind {
+    Struct,
+    Union,
+    Variant,
+}
+
+#[derive(Clone, Debug)]
+pub struct Struct {
+    parent: ParentKind,
+    this: Option<Weak<RefCell<Struct>>>,
+    kind: StructKind,
+    name: Option<String>,
+    comment: Option<Comment>,
+    fields: Vec<Ref<Field>>,
+    position: Position,
+    children: Option<Children>,
+    size: i32,
+    packed: bool,
+    needs_heap: bool,
+}
+
+impl Struct {
+    fn new(parent: ParentKind, kind: StructKind) -> Self {
+        Self {
+            parent,
+            this: None,
+            kind,
+            name: None,
+            comment: None,
+            fields: Vec::new(),
+            position: Position::new(0, 0, 0),
+            children: None,
+            size: 0,
+            packed: false,
+            needs_heap: false,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match &self.name {
+            Some(s) => s.as_str(),
+            None => "",
+        }
+    }
+
+    pub fn parent(&self) -> &ParentKind {
+        &self.parent
+    }
+    pub fn this(&self) -> &Option<Weak<RefCell<Struct>>> {
+        &self.this
+    }
+    pub fn kind(&self) -> StructKind {
+        self.kind
+    }
+    pub fn comment(&self) -> &Option<Comment> {
+        &self.comment
+    }
+    pub fn fields(&self) -> &Vec<Ref<Field>> {
+        &self.fields
+    }
+    pub fn position(&self) -> Position {
+        self.position
+    }
+    pub fn size(&self) -> i32 {
+        self.size
+    }
+    pub fn packed(&self) -> bool {
+        self.packed
+    }
+    pub fn is_flex(&self) -> bool {
+        self.needs_heap
+    }
+
+    pub fn set_name(&mut self, name: impl Into<String>) -> &mut Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    pub fn clear_name(&mut self) -> &mut Self {
+        self.name = None;
+        self
+    }
+
+    pub fn module(&self) -> Option<Rc<RefCell<Module>>> {
+        let mut parent = self.parent.clone();
+        let mut i = 0;
+        while i < 128 {
+            match parent {
+                ParentKind::Module(ref m) => {
+                    return m.upgrade();
+                }
+                ParentKind::Struct(s) => parent = s.borrow().unwrap().parent.clone(),
+                ParentKind::Const(c) => parent = c.borrow().unwrap().parent.clone(),
+                ParentKind::Alias(a) => parent = a.borrow().unwrap().parent.clone(),
+                ParentKind::Field(f) => {
+                    parent = ParentKind::Struct(Ref::Weak(f.borrow().unwrap().parent.clone()))
+                }
+                ParentKind::None => return None,
+            }
+            i += 1;
+        }
+        None
+    }
+
+    pub fn children(&self) -> Option<&Children> {
+        self.children.as_ref()
+    }
+
+    pub fn children_mut(&mut self) -> Option<&mut Children> {
+        self.children.as_mut()
+    }
+
+    pub fn add_field(
+        &mut self,
+        mut f: impl FnMut(&mut Field) -> ModelResult<()>,
+    ) -> ModelResult<Ref<Field>> {
+        let mut field = Ref::Strong(Rc::new(RefCell::new(Field::new(
+            self.this.clone().unwrap(),
+            None,
+        ))));
+        f(field.as_mut())?;
+        for field in self.fields.iter() {
+            if field
+                .as_ref()
+                .name()
+                .eq_ignore_ascii_case(field.as_ref().name())
+            {
+                return Err(ModelError::DuplicateFieldName(
+                    self.name.clone().unwrap(),
+                    field.as_ref().name().to_owned(),
+                ));
+            }
+        }
+        field.as_mut().size = field.as_ref().kind.size();
+        self.fields.push(field.clone());
+        Ok(field)
+    }
+
+    fn ensure_children(&mut self) -> &mut Children {
+        if self.children.is_none() {
+            self.children = Some(Children::new(ParentKind::Struct(Ref::Weak(
+                self.this.as_ref().unwrap().clone(),
+            ))))
+        }
+        self.children.as_mut().unwrap()
+    }
+
+    #[inline]
+    pub fn add_alias(&mut self, name: String, kind: Kind) -> ModelResult<Ref<Alias>> {
+        self.ensure_children().add_alias(name, kind)
+    }
+
+    pub fn add_struct(
+        &mut self,
+        name: Option<String>,
+        kind: StructKind,
+    ) -> ModelResult<Ref<Struct>> {
+        self.ensure_children().add_struct(name, kind)
+    }
+
+    pub fn add_enum(&mut self, name: Option<String>) -> ModelResult<Ref<Enum>> {
+        self.ensure_children().add_enum(name)
+    }
+
+    pub fn add_const(&mut self, name: Option<String>) -> ModelResult<Ref<Const>> {
+        self.ensure_children().add_const(name)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Field {
+    parent: Weak<RefCell<Struct>>,
+    name: Option<String>,
+    kind: Kind,
+    comment: Option<Comment>,
+    line_comment: Option<Comment>,
+    value: Option<Value>,
+    position: Position,
+    align: i32,
+    offset: i32,
+    size: i32,
+}
+
+impl Field {
+    fn new(parent: Weak<RefCell<Struct>>, name: Option<String>) -> Self {
+        Self {
+            parent,
+            name,
+            kind: Kind::None,
+            comment: None,
+            line_comment: None,
+            value: None,
+            position: Position::new(0, 0, 0),
+            align: 0,
+            offset: 0,
+            size: 0,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match &self.name {
+            None => "",
+            Some(n) => n.as_str(),
+        }
+    }
+    pub fn parent(&self) -> &Weak<RefCell<Struct>> {
+        &self.parent
+    }
+    pub fn kind(&self) -> &Kind {
+        &self.kind
+    }
+    pub fn comment(&self) -> &Option<Comment> {
+        &self.comment
+    }
+    pub fn line_comment(&self) -> &Option<Comment> {
+        &self.line_comment
+    }
+    pub fn value(&self) -> &Option<Value> {
+        &self.value
+    }
+    pub fn position(&self) -> Position {
+        self.position
+    }
+    pub fn align(&self) -> i32 {
+        self.align
+    }
+    pub fn offset(&self) -> i32 {
+        self.offset
+    }
+    pub fn size(&self) -> i32 {
+        self.size
+    }
+
+    pub fn set_name(&mut self, name: impl Into<String>) -> &mut Self {
+        self.name = Some(name.into());
+        self
+    }
+    pub fn set_kind(&mut self, kind: Kind) -> &mut Self {
+        self.kind = kind;
+        self
+    }
+    pub fn set_comment(&mut self, comment: Option<Comment>) -> &mut Self {
+        self.comment = comment;
+        self
+    }
+    pub fn set_line_comment(&mut self, line_comment: Option<Comment>) {
+        self.line_comment = line_comment;
+    }
+    pub fn set_value(&mut self, value: Option<Value>) -> &mut Self {
+        self.value = value;
+        self
+    }
+    pub fn set_position(&mut self, position: Position) -> &mut Self {
+        self.position = position;
+        self
+    }
+    pub fn set_align(&mut self, align: i32) -> &mut Self {
+        self.align = align;
+        self
+    }
+    pub fn set_offset(&mut self, offset: i32) -> &mut Self {
+        self.offset = offset;
+        self
+    }
+    pub fn set_size(&mut self, size: i32) -> &mut Self {
+        self.size = size;
+        self
+    }
+    pub fn finish(&self) -> ModelResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Const {
+    parent: ParentKind,
+    this: Option<Weak<RefCell<Const>>>,
+    comment: Option<Comment>,
+    name: Option<String>,
+    kind: Kind,
+    value: Value,
+}
+
+impl Const {
+    fn new(parent: ParentKind) -> Self {
+        Self {
+            parent,
+            this: None,
+            comment: None,
+            name: None,
+            kind: Kind::None,
+            value: Value::Nil,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Value {
+    Nil,
+    Bool(bool),
+    I8(i8),
+    I16(i16),
+    I32(i32),
+    I64(i64),
+    I128(i128),
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
+    U128(u128),
+    F32(f32),
+    F64(f64),
+    String(Ref<String>),
+    Struct(Ref<Object>),
+    Union(Ref<Object>),
+    Variant(Ref<Object>),
+    Enum(Ref<EnumOption>),
+    Const(Ref<Const>),
+    Object(Ref<Object>),
+}
+
+#[derive(Clone, Debug)]
+pub struct Object {
+    pub props: Vec<ObjectProperty>,
+}
+
+impl Object {
+    pub fn new() -> Self {
+        Self { props: Vec::new() }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ObjectProperty {
+    pub name: Option<String>,
+    pub field: Option<Ref<Field>>,
+    pub value: Value,
+}
+
+impl ObjectProperty {
+    pub fn new(name: Option<String>, value: Value) -> Self {
+        Self {
+            name,
+            field: None,
+            value,
+        }
+    }
+}
+
+pub struct CommentBuf {
     orphans: Vec<Comment>,
     active: Option<Comment>,
 }
 
-impl Comments {
+impl CommentBuf {
     pub fn new() -> Self {
-        Self { orphans: Vec::new(), active: None }
+        Self {
+            orphans: Vec::new(),
+            active: None,
+        }
     }
 
     pub fn push(&mut self, multiline: bool, begin: Position, end: Position, text: &str) {
@@ -257,7 +1270,10 @@ impl Comments {
                 self.orphans.push(active);
                 self.active = Some(Comment::new(CommentLine::new(begin, end, text), true));
             } else if active.line.begin.line == begin.line - 1 {
-                active.lines = Some(vec![active.line.to_owned(), CommentLine::new(begin, end, text)]);
+                active.lines = Some(vec![
+                    active.line.to_owned(),
+                    CommentLine::new(begin, end, text),
+                ]);
                 self.active = Some(active);
             } else {
                 self.orphans.push(active);
@@ -268,7 +1284,7 @@ impl Comments {
             if multiline {
                 self.orphans.push(active);
                 self.active = Some(Comment::new(CommentLine::new(begin, end, text), true));
-            } else if lines.len() > 0 && lines.last().unwrap().begin.line == begin.line - 1 {
+            } else if !lines.is_empty() && lines.last().unwrap().begin.line == begin.line - 1 {
                 lines.push(CommentLine::new(begin, end, text));
                 self.active = Some(active);
             } else {
@@ -278,7 +1294,7 @@ impl Comments {
         } else {
             let mut lines = active.lines.as_mut().unwrap();
             if multiline {
-                if lines.len() > 0 && lines.last().unwrap().begin.line == begin.line - 1 {
+                if !lines.is_empty() && lines.last().unwrap().begin.line == begin.line - 1 {
                     lines.push(CommentLine::new(begin, end, text));
                     // active.lines = Some(lines);
                     self.active = Some(active);
@@ -308,9 +1324,17 @@ pub struct Comment {
 impl Comment {
     pub fn new(line: CommentLine, multi: bool) -> Self {
         if multi {
-            Self { line: line.clone(), lines: Some(vec![line]), multi }
+            Self {
+                line: line.clone(),
+                lines: Some(vec![line]),
+                multi,
+            }
         } else {
-            Self { line, lines: None, multi }
+            Self {
+                line,
+                lines: None,
+                multi,
+            }
         }
     }
 
@@ -332,963 +1356,77 @@ pub struct CommentLine {
 
 impl CommentLine {
     pub fn new(begin: Position, end: Position, value: &str) -> Self {
-        Self { begin, end, value: value.to_owned() }
-    }
-}
-
-pub struct Mut<'a, T>(*mut T, PhantomData<(&'a ())>);
-
-impl<'a, T> Mut<'a, T> {
-    pub fn new(r: *mut T) -> Self {
-        Self(r, PhantomData)
-    }
-
-    pub fn as_mut(&mut self) -> &'a mut T {
-        unsafe { &mut *(self.0) }
-    }
-}
-
-impl<'a, T> Deref for Mut<'a, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*self.0 }
-    }
-}
-
-impl<'a, T> DerefMut for Mut<'a, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *self.0 }
-    }
-}
-
-impl<'a, T> Clone for Mut<'a, T> {
-    fn clone(&self) -> Self {
-        Self(self.0, PhantomData)
-    }
-}
-
-#[derive(Clone)]
-pub struct Import<'a> {
-    module: &'a Module<'a>,
-    alias: String,
-}
-
-#[derive(Clone)]
-pub struct Type<'a> {
-    kind: Kind<'a>,
-    module: Rc<ModuleInner<'a>>,
-    parent: Option<&'a Type<'a>>,
-    value: Option<Value<'a>>,
-}
-
-const EMPTY: &'static str = "";
-
-impl<'a> Type<'a> {
-    fn new(
-        module: Rc<ModuleInner<'a>>,
-        parent: Option<&'a Type<'a>>,
-    ) -> Self {
         Self {
-            // name,
-            kind: Kind::Empty,
-            module,
-            parent,
-            value: None,
-        }
-    }
-
-    pub fn kind(&'a self) -> &'a Kind<'a> {
-        &self.kind
-    }
-
-    pub fn inner_mut(&mut self) -> Option<&mut Option<Vec<&'a Type<'a>>>> {
-        match &mut self.kind {
-            Kind::Struct(s) => Some(&mut s.inner),
-            _ => None
-        }
-    }
-
-    pub fn module(&self) -> &ModuleInner<'a> {
-        unsafe { self.module.as_ref() }
-    }
-
-    pub(crate) fn module_mut(&mut self) -> &mut ModuleInner<'a> {
-        unsafe { &mut *(self.module.as_ref() as *const ModuleInner<'a> as *mut ModuleInner<'a>) }
-    }
-
-    pub fn parent(&self) -> Option<&Type<'a>> {
-        match self.parent {
-            Some(p) => Some(p),
-            None => None
-        }
-    }
-
-    pub fn parent_mut(&'a mut self) -> Option<&'a mut Type<'a>> {
-        match self.parent {
-            Some(p) => Some(unsafe { &mut *(p as *const Type<'a> as *mut Type<'a>) }),
-            None => None
-        }
-    }
-
-    pub fn is_const(&self) -> bool {
-        match self.kind {
-            Kind::Const(_) => true,
-            _ => false
-        }
-    }
-
-    pub fn is_alias(&self) -> bool {
-        match self.kind {
-            Kind::Alias(_) => true,
-            _ => false
-        }
-    }
-
-    pub fn parent_is_const(&self) -> bool {
-        match self.parent {
-            Some(p) => p.is_const(),
-            None => false
-        }
-    }
-
-    pub fn parent_is_alias(&self) -> bool {
-        match self.parent {
-            Some(p) => p.is_alias(),
-            None => false
-        }
-    }
-
-    pub fn parent_is_field(&self) -> bool {
-        match self.parent {
-            Some(p) => p.is_field(),
-            None => false
-        }
-    }
-
-    pub fn can_default(&self) -> bool {
-        match &self.parent {
-            Some(p) => match &p.kind {
-                Kind::Field(f) => f.parent.kind == StructKind::Struct,
-                _ => false
-            },
-            None => false
-        }
-    }
-
-    pub fn is_field(&self) -> bool {
-        match self.kind {
-            Kind::Field(_) => true,
-            _ => false
-        }
-    }
-
-    pub fn is_optional(&self) -> bool {
-        match self.kind {
-            Kind::Optional(_) => true,
-            _ => false
-        }
-    }
-
-    pub fn set_inline_comment(&mut self, comment: Option<Comment>) -> bool {
-        match self.kind {
-            Kind::Field(ref mut field) => {
-                field.set_inline_comment(comment);
-                true
-            }
-            _ => false
-        }
-    }
-
-    pub fn is_module(&self) -> bool {
-        match self.kind {
-            Kind::Module(_) => true,
-            _ => false
-        }
-    }
-
-    pub fn name(&self) -> &str {
-        self.kind.name()
-    }
-
-    fn push(&mut self,
-            f: impl FnOnce(&'a Type<'a>) -> Kind<'a>,
-    ) -> &mut Type<'a> {
-        (unsafe { &mut *(self.module.as_ref() as *const ModuleInner<'a> as *mut ModuleInner<'a>) }).types.push(
-            Type::new(self.module.clone(), Some(unsafe { &*(self as *const Type<'a>) }))
-        );
-        let t = (unsafe { &mut *(self.module.as_ref() as *const ModuleInner<'a> as *mut ModuleInner<'a>) }).types.last_mut().unwrap();
-        t.kind = f(unsafe { &*(t as *const Type<'a>) });
-        t
-    }
-
-    pub fn new_vector(&mut self) -> &mut Vector<'a> {
-        match self.push(|t| Kind::Vector(Vector::new(t, 0))).kind {
-            Kind::Vector(ref mut v) => v,
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn new_array(&mut self, size: usize) -> &mut Array<'a> {
-        match self.push(|t| Kind::Array(Array::new(t, size))).kind {
-            Kind::Array(ref mut a) => a,
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn new_array_vector(&mut self, size: usize) -> &mut ArrayVector<'a> {
-        match self.push(|t| Kind::ArrayVector(ArrayVector::new(t, size))).kind {
-            Kind::ArrayVector(ref mut a) => a,
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn new_enum(&'a mut self, name: &'a str, of: Option<&'a Type<'a>>, comments: Option<Comment>) -> (&'a mut Enum<'a>, &'a mut Self) {
-        let s = unsafe { &mut *(self as *mut Self) };
-        match self.push(|t| Kind::Enum(Enum::new(t, name, of, comments))).kind {
-            Kind::Enum(ref mut e) => (e, s),
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn new_enum_option(
-        &mut self,
-        name: &'a str,
-        value: Value<'a>,
-        comments: Option<Comment>,
-        line_comment: Option<Comment>,
-    ) -> &mut EnumOption<'a> {
-        match self.push(|t| Kind::EnumOption(EnumOption::new(t, name, value, comments, line_comment))).kind {
-            Kind::EnumOption(ref mut eo) => eo,
-            _ => unreachable!(),
-        }
-    }
-
-    fn new_struct(&mut self, kind: StructKind) -> &mut Struct<'a> {
-        match self.push(|t| Kind::Struct(Struct::new(t, kind))).kind {
-            Kind::Struct(ref mut s) => s,
-            _ => unreachable!(),
-        }
-    }
-    fn new_field(&mut self, parent: &'a Struct<'a>, name: &'a str, number: usize, comments: Option<Comment>) -> &mut Field<'a> {
-        match self.push(|t| Kind::Field(Field::new(t, parent, name, number, comments))).kind {
-            Kind::Field(ref mut f) => f,
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn new_alias(&mut self, name: String, of: Option<&'a Type<'a>>) -> &mut Alias<'a> {
-        match self.push(|t| Kind::Alias(Alias::new(t, name, of))).kind {
-            Kind::Alias(ref mut a) => a,
-            _ => unreachable!(),
-        }
-    }
-    pub fn new_optional(&mut self, of: Option<&'a Type<'a>>) -> &mut Optional<'a> {
-        match self.push(|t| Kind::Optional(Optional::new(t, of))).kind {
-            Kind::Optional(ref mut o) => o,
-            _ => unreachable!(),
-        }
-    }
-    pub fn new_pointer(&mut self, of: Option<&'a Type<'a>>) -> &mut Pointer<'a> {
-        match self.push(|t| Kind::Pointer(Pointer::new(t, of))).kind {
-            Kind::Pointer(ref mut p) => p,
-            _ => unreachable!(),
-        }
-    }
-    pub fn new_unknown(&mut self, name: Option<&'a str>) -> &mut Unknown<'a> {
-        match self.push(|t| Kind::Unknown(Unknown::new(t, name))).kind {
-            Kind::Unknown(ref mut n) => n,
-            _ => unreachable!(),
-        }
-    }
-    pub fn new_bool(&mut self) -> &mut Type<'a> {
-        self.push(|_| Kind::Bool)
-    }
-    pub fn new_i8(&mut self) -> &mut Type<'a> {
-        self.push(|_| Kind::I8)
-    }
-    pub fn new_i16(&mut self, endian: Endian) -> &mut Number<'a> {
-        match self.push(|t| Kind::I16(Number::new(t, endian))).kind {
-            Kind::I16(ref mut n) => n,
-            _ => unreachable!(),
-        }
-    }
-    pub fn new_i32(&mut self, endian: Endian) -> &mut Number<'a> {
-        match self.push(|t| Kind::I32(Number::new(t, endian))).kind {
-            Kind::I32(ref mut n) => n,
-            _ => unreachable!(),
-        }
-    }
-    pub fn new_i64(&mut self, endian: Endian) -> &mut Number<'a> {
-        match self.push(|t| Kind::I64(Number::new(t, endian))).kind {
-            Kind::I64(ref mut n) => n,
-            _ => unreachable!(),
-        }
-    }
-    pub fn new_i128(&mut self, endian: Endian) -> &mut Number<'a> {
-        match self.push(|t| Kind::I128(Number::new(t, endian))).kind {
-            Kind::I128(ref mut n) => n,
-            _ => unreachable!(),
-        }
-    }
-    pub fn new_u8(&mut self) -> &mut Type<'a> {
-        self.push(|_| Kind::U8)
-    }
-    pub fn new_u16(&mut self, endian: Endian) -> &mut Number<'a> {
-        match self.push(|t| Kind::U16(Number::new(t, endian))).kind {
-            Kind::U16(ref mut n) => n,
-            _ => unreachable!(),
-        }
-    }
-    pub fn new_u32(&mut self, endian: Endian) -> &mut Number<'a> {
-        match self.push(|t| Kind::U32(Number::new(t, endian))).kind {
-            Kind::U32(ref mut n) => n,
-            _ => unreachable!(),
-        }
-    }
-    pub fn new_u64(&mut self, endian: Endian) -> &mut Number<'a> {
-        match self.push(|t| Kind::U64(Number::new(t, endian))).kind {
-            Kind::U64(ref mut n) => n,
-            _ => unreachable!(),
-        }
-    }
-    pub fn new_u128(&mut self, endian: Endian) -> &mut Number<'a> {
-        match self.push(|t| Kind::U128(Number::new(t, endian))).kind {
-            Kind::U128(ref mut n) => n,
-            _ => unreachable!(),
-        }
-    }
-    pub fn new_f32(&mut self, endian: Endian) -> &mut Number<'a> {
-        match self.push(|t| Kind::F32(Number::new(t, endian))).kind {
-            Kind::F32(ref mut n) => n,
-            _ => unreachable!(),
-        }
-    }
-    pub fn new_f64(&mut self, endian: Endian) -> &mut Number<'a> {
-        match self.push(|t| Kind::F64(Number::new(t, endian))).kind {
-            Kind::F64(ref mut n) => n,
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn new_string(&mut self) -> &mut Str<'a> {
-        match self.push(|t| Kind::String(Str::new(t, 0, 0))).kind {
-            Kind::String(ref mut s) => s,
-            _ => unreachable!(),
-        }
-    }
-    pub fn new_string_inline(&mut self, size: usize) -> &mut Str<'a> {
-        match self.push(|t| Kind::StringInline(Str::new(t, size, 0))).kind {
-            Kind::StringInline(ref mut s) => s,
-            _ => unreachable!(),
-        }
-    }
-    pub fn new_string_inline_plus(&mut self, size: usize) -> &mut Str<'a> {
-        match self.push(|t| Kind::StringInlinePlus(Str::new(t, size, 0))).kind {
-            Kind::StringInlinePlus(ref mut s) => s,
-            _ => unreachable!(),
-        }
-    }
-    pub fn new_padding(&mut self, size: usize) -> &mut Padding<'a> {
-        match self.push(|t| Kind::Padding(Padding::new(t, size))).kind {
-            Kind::Padding(ref mut p) => p,
-            _ => unreachable!(),
+            begin,
+            end,
+            value: value.to_owned(),
         }
     }
 }
 
-pub trait KindVariant<'a> {
-    fn this_ptr(&self) -> *const Type<'a>;
-
-    fn this(&self) -> &'a Type<'a> {
-        unsafe { &*self.this_ptr() }
-    }
-
-    fn this_mut(&mut self) -> &'a mut Type<'a> {
-        unsafe { &mut *(self.this_ptr() as *mut Type<'a>) }
-    }
-
-    fn module(&self) -> &ModuleInner<'a> {
-        self.this().module()
-    }
-
-    fn module_mut(&mut self) -> &'a mut ModuleInner<'a> {
-        (unsafe { &mut *(self.this_ptr() as *mut Type<'a>) }).module_mut()
-    }
-
-    fn name(&self) -> &'a str {
-        self.this().kind.name()
+impl Drop for Module {
+    fn drop(&mut self) {
+        println!("dropped module");
     }
 }
 
-#[derive(Clone)]
-pub struct Const<'a> {
-    owner: &'a Type<'a>,
-    value: Value<'a>,
-}
-
-#[derive(Clone)]
-pub struct Alias<'a> {
-    this: &'a Type<'a>,
-    name: String,
-    of: Option<&'a Type<'a>>,
-}
-
-impl<'a> Alias<'a> {
-    pub fn new(this: &'a Type<'a>, name: String, of: Option<&'a Type<'a>>) -> Self {
-        Self { this, name, of }
-    }
-
-    pub fn set_of(&mut self, of: Option<&'a Type<'a>>) {
-        self.of = of;
+impl Drop for Struct {
+    fn drop(&mut self) {
+        println!("dropped Struct");
     }
 }
 
-impl<'a> KindVariant<'a> for Alias<'a> {
-    fn this_ptr(&self) -> *const Type<'a> {
-        self.this
-    }
-}
-
-#[derive(Clone)]
-pub struct Optional<'a> {
-    this: &'a Type<'a>,
-    of: Option<&'a Type<'a>>,
-}
-
-impl<'a> Optional<'a> {
-    pub fn new(this: &'a Type<'a>, of: Option<&'a Type<'a>>) -> Self {
-        Self { this, of }
-    }
-
-    pub fn set_of(&mut self, of: Option<&'a Type<'a>>) {
-        self.of = of;
-    }
-}
-
-impl<'a> KindVariant<'a> for Optional<'a> {
-    fn this_ptr(&self) -> *const Type<'a> {
-        self.this
-    }
-}
-
-#[derive(Clone)]
-pub struct Pointer<'a> {
-    this: &'a Type<'a>,
-    of: Option<&'a Type<'a>>,
-}
-
-impl<'a> Pointer<'a> {
-    pub fn new(this: &'a Type<'a>, of: Option<&'a Type<'a>>) -> Self {
-        Self { this, of }
-    }
-
-    pub fn set_of(&mut self, of: Option<&'a Type<'a>>) {
-        self.of = of;
-    }
-}
-
-impl<'a> KindVariant<'a> for Pointer<'a> {
-    fn this_ptr(&self) -> *const Type<'a> {
-        self.this
-    }
-}
-
-#[derive(Copy, Clone, PartialEq)]
-pub enum Endian {
-    Little = 0,
-    Big = 1,
-    Native = 2,
-}
-
-#[derive(Clone)]
-pub struct Unknown<'a> {
-    this: &'a Type<'a>,
-    name: Option<&'a str>,
-}
-
-impl<'a> Unknown<'a> {
-    pub fn new(this: &'a Type<'a>, name: Option<&'a str>) -> Self {
-        Self { this, name }
-    }
-}
-
-impl<'a> KindVariant<'a> for Unknown<'a> {
-    fn this_ptr(&self) -> *const Type<'a> {
-        self.this
-    }
-}
-
-#[derive(Clone)]
-pub struct Number<'a> {
-    this: &'a Type<'a>,
-    endian: Endian,
-}
-
-impl<'a> Number<'a> {
-    fn new(this: &'a Type<'a>, endian: Endian) -> Self {
-        Self { this, endian }
-    }
-}
-
-impl<'a> KindVariant<'a> for Number<'a> {
-    fn this_ptr(&self) -> *const Type<'a> {
-        self.this
-    }
-}
-
-#[derive(Clone)]
-pub struct Padding<'a> {
-    this: &'a Type<'a>,
-    size: usize,
-}
-
-impl<'a> Padding<'a> {
-    fn new(this: &'a Type<'a>, size: usize) -> Self {
-        Self {
-            this,
-            size,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct Str<'a> {
-    owner: &'a Type<'a>,
-    inline_size: usize,
-    max_size: usize,
-}
-
-impl<'a> Str<'a> {
-    fn new(owner: &'a Type<'a>, inline_size: usize, max_size: usize) -> Self {
-        Self {
-            owner,
-            inline_size,
-            max_size,
-        }
-    }
-
-    pub fn is_inline(&self) -> bool {
-        self.inline_size > 0
-    }
-}
-
-impl<'a> KindVariant<'a> for Str<'a> {
-    fn this_ptr(&self) -> *const Type<'a> {
-        self.owner
-    }
-}
-
-#[derive(Clone, PartialEq)]
-pub enum StructKind {
-    Struct,
-    Variant,
-    Union,
-}
-
-#[derive(Clone)]
-pub struct Struct<'a> {
-    ty: &'a Type<'a>,
-    name: Option<String>,
-    align: u16,
-    pack: u16,
-    size: u32,
-    kind: StructKind,
-    fields: Vec<&'a Field<'a>>,
-    fields_sorted: Vec<&'a Field<'a>>,
-    inner: Option<Vec<&'a Type<'a>>>,
-}
-
-impl<'a> Struct<'a> {
-    fn new(ty: &'a Type<'a>, kind: StructKind) -> Self {
-        Self {
-            ty,
-            name: None,
-            align: 0,
-            pack: 0,
-            size: 0,
-            kind,
-            fields: Vec::new(),
-            fields_sorted: Vec::new(),
-            inner: None,
-        }
-    }
-
-    pub fn set_name(&mut self, name: String) {
-        self.name = Some(name);
-    }
-    pub fn set_align(&mut self, align: u16) {
-        self.align = align;
-    }
-    pub fn set_pack(&mut self, pack: u16) {
-        self.pack = pack;
-    }
-    pub fn set_size(&mut self, size: u32) {
-        self.size = size;
-    }
-    pub fn set_kind(&mut self, kind: StructKind) {
-        self.kind = kind;
-    }
-
-    pub fn new_field(&mut self, name: &'a str, number: usize, comments: Option<Comment>) -> &mut Field<'a> {
-        let f = self.this_mut().new_field(unsafe { &*(self as *const Self) }, name, number, comments);
-        self.fields.push(unsafe { &*(f as *const Field<'a>) });
-        f
-    }
-
-    // pub fn new_enum(&mut self, name: &'a str, of: Option<&'a Type<'a>>, comments: Option<Comment>) -> &mut Enum<'a> {
-    //     let e = self.this_mut().new_enum(name, of, comments);
-    //     if self.inner.is_none() {
-    //         self.inner = Some(vec![e.this()])
-    //     } else {
-    //         let mut vector = self.inner.take().unwrap();
-    //         vector.push(e.this());
-    //         self.inner = Some(vector);
-    //     }
-    //     e
-    // }
-
-    fn new_struct_kind(&mut self, kind: StructKind) -> &mut Struct<'a> {
-        let s = self.this_mut().new_struct(kind);
-        if self.inner.is_none() {
-            self.inner = Some(vec![s.this()])
-        } else {
-            let mut vector = self.inner.take().unwrap();
-            vector.push(s.this());
-            self.inner = Some(vector);
-        }
-        s
-    }
-
-    pub fn new_struct(&mut self) -> &mut Struct<'a> {
-        self.new_struct_kind(StructKind::Struct)
-    }
-
-    pub fn new_union(&mut self) -> &mut Struct<'a> {
-        self.new_struct_kind(StructKind::Union)
-    }
-
-    pub fn new_variant(&mut self) -> &mut Struct<'a> {
-        self.new_struct_kind(StructKind::Variant)
-    }
-}
-
-impl<'a> KindVariant<'a> for Struct<'a> {
-    fn this_ptr(&self) -> *const Type<'a> {
-        self.ty
-    }
-}
-
-#[derive(Clone)]
-pub struct Field<'a> {
-    this: &'a Type<'a>,
-    parent: &'a Struct<'a>,
-    name: &'a str,
-    number: usize,
-    ty: Option<&'a Type<'a>>,
-    comments: Option<Comment>,
-    inline_comment: Option<Comment>,
-}
-
-impl<'a> Field<'a> {
-    pub fn new(this: &'a Type<'a>, parent: &'a Struct<'a>, name: &'a str, number: usize, comments: Option<Comment>) -> Self {
-        Self { this, parent, name, number, ty: None, comments, inline_comment: None }
-    }
-
-    pub fn set_name(&mut self, name: &'a str) {
-        self.name = name;
-    }
-
-    pub fn set_number(&mut self, number: usize) {
-        self.number = number;
-    }
-
-    pub fn set_type(&mut self, ty: Option<&'a Type<'a>>) {
-        self.ty = ty;
-    }
-
-    pub fn set_inline_comment(&mut self, comment: Option<Comment>) {
-        self.inline_comment = comment;
-    }
-}
-
-impl<'a> KindVariant<'a> for Field<'a> {
-    fn this_ptr(&self) -> *const Type<'a> {
-        self.this
-    }
-}
-
-#[derive(Clone)]
-pub struct Enum<'a> {
-    this: &'a Type<'a>,
-    name: &'a str,
-    of: Option<&'a Type<'a>>,
-    options: Vec<&'a EnumOption<'a>>,
-    comments: Option<Comment>,
-}
-
-impl<'a> Enum<'a> {
-    fn new(
-        this: &'a Type<'a>,
-        name: &'a str,
-        of: Option<&'a Type<'a>>,
-        comments: Option<Comment>,
-    ) -> Self {
-        Self { this, name, of, options: vec![], comments }
-    }
-
-    pub fn add_option(
-        &mut self,
-        name: &'a str,
-        value: Value<'a>,
-        comments: Option<Comment>,
-        line_comment: Option<Comment>,
-    ) -> &'a EnumOption<'a> {
-        let option = self.this_mut().new_enum_option(name, value, comments, line_comment);
-        self.options.push(option);
-        *self.options.last().unwrap()
-    }
-
-    pub fn of(&self) -> &Option<&'a Type<'a>> {
-        &self.of
-    }
-
-    pub fn kind(&self) -> Option<&Kind<'a>> {
-        match self.of {
-            Some(v) => Some(&v.kind),
-            _ => None
-        }
-    }
-
-    pub fn is_inlined(&self) -> bool {
-        self.name().is_empty()
-    }
-
-    pub fn set_of(&mut self, of: Option<&'a Type<'a>>) {
-        self.of = of;
-    }
-}
-
-impl<'a> KindVariant<'a> for Enum<'a> {
-    fn this_ptr(&self) -> *const Type<'a> {
-        self.this
-    }
-}
-
-#[derive(Clone)]
-pub struct TypeComments {
-    comments: Option<Comment>,
-    line: Option<Comment>,
-}
-
-impl TypeComments {
-    pub fn new(comments: Option<Comment>, line: Option<Comment>) -> Self {
-        Self {
-            comments,
-            line,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct EnumOption<'a> {
-    this: &'a Type<'a>,
-    name: &'a str,
-    value: Value<'a>,
-    // comments: TypeComments<'a>,
-    comments: Option<Comment>,
-    line_comment: Option<Comment>,
-}
-
-impl<'a> EnumOption<'a> {
-    fn new(
-        this: &'a Type<'a>,
-        name: &'a str,
-        value: Value<'a>,
-        comments: Option<Comment>,
-        line_comment: Option<Comment>,
-    ) -> EnumOption<'a> {
-        Self { this, name, value, comments, line_comment }
-    }
-}
-
-#[derive(Clone)]
-pub struct Array<'a> {
-    this: &'a Type<'a>,
-    element: Option<&'a Type<'a>>,
-    size: usize,
-}
-
-impl<'a> Array<'a> {
-    fn new(this: &'a Type<'a>, size: usize) -> Self {
-        Self {
-            this,
-            element: None,
-            size,
-        }
-    }
-
-    pub fn set_element(&mut self, element: Option<&'a Type<'a>>) {
-        self.element = element;
-    }
-}
-
-impl<'a> KindVariant<'a> for Array<'a> {
-    fn this_ptr(&self) -> *const Type<'a> {
-        self.this
-    }
-}
-
-#[derive(Clone)]
-pub struct ArrayVector<'a> {
-    this: &'a Type<'a>,
-    element: Option<&'a Type<'a>>,
-    array_size: usize,
-}
-
-impl<'a> ArrayVector<'a> {
-    fn new(this: &'a Type<'a>, array_size: usize) -> Self {
-        Self {
-            this,
-            element: None,
-            array_size,
-        }
-    }
-
-    pub fn set_element(&mut self, element: Option<&'a Type<'a>>) {
-        self.element = element;
-    }
-}
-
-impl<'a> KindVariant<'a> for ArrayVector<'a> {
-    fn this_ptr(&self) -> *const Type<'a> {
-        self.this
-    }
-}
-
-#[derive(Clone)]
-pub struct Vector<'a> {
-    this: &'a Type<'a>,
-    element: Option<&'a Type<'a>>,
-    size: usize,
-}
-
-impl<'a> Vector<'a> {
-    fn new(this: &'a Type<'a>, size: usize) -> Self {
-        Self {
-            this,
-            element: None,
-            size,
-        }
-    }
-
-    pub fn set_element(&mut self, element: Option<&'a Type<'a>>) {
-        self.element = element;
-    }
-}
-
-impl<'a> KindVariant<'a> for Vector<'a> {
-    fn this_ptr(&self) -> *const Type<'a> {
-        self.this
-    }
-}
-
-#[derive(Clone)]
-pub struct Map<'a> {
-    owner: &'a Type<'a>,
-    key: Option<&'a Type<'a>>,
-    value: Option<&'a Type<'a>>,
-}
-
-impl<'a> Map<'a> {
-    fn new(owner: &'a Type<'a>) -> Self {
-        Self {
-            owner,
-            key: None,
-            value: None,
-        }
-    }
-
-    pub fn set_key(&mut self, key: Option<&'a Type<'a>>) {
-        self.key = key;
-    }
-
-    pub fn set_value(&mut self, value: Option<&'a Type<'a>>) {
-        self.value = value;
-    }
-}
-
-impl<'a> KindVariant<'a> for Map<'a> {
-    fn this_ptr(&self) -> *const Type<'a> {
-        self.owner
-    }
-}
-
-
-#[derive(Clone)]
-pub enum Value<'a> {
-    Nil,
-    Bool(bool),
-    I8(i8),
-    I16(i16),
-    I32(i32),
-    I64(i64),
-    I128(i128),
-    U8(u8),
-    U16(u16),
-    U32(u32),
-    U64(u64),
-    U128(u128),
-    F32(f32),
-    F64(f64),
-    String(String),
-    Struct(Object<'a>),
-    Union(Object<'a>),
-    Variant(Object<'a>),
-    Enum(&'a EnumOption<'a>),
-    Const(&'a Const<'a>),
-    Object(Object<'a>),
-}
-
-#[derive(Clone)]
-pub struct Object<'a> {
-    pub props: Vec<ObjectProperty<'a>>,
-}
-
-impl<'a> Object<'a> {
-    pub fn new() -> Self {
-        Self {
-            props: Vec::new(),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct ObjectProperty<'a> {
-    pub name: Option<String>,
-    pub value: Value<'a>,
-}
-
-impl<'a> ObjectProperty<'a> {
-    pub fn new(name: Option<String>, value: Value<'a>) -> Self {
-        Self { name, value }
+impl Drop for Field {
+    fn drop(&mut self) {
+        eprintln!("dropped Field: {}", self.name());
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::BufReader;
+    use anyhow::Error;
 
     use super::*;
 
     #[test]
-    fn test_type() {
-        let mut m = Module::new("".to_owned());
+    fn test_type() -> anyhow::Result<()> {
+        let mut m = Module::new(Some("".to_owned()));
 
-        let s = m.new_struct();
-        s.set_name(String::from("Order"));
-        s.module_mut();
+        {
+            let children = &m.borrow().unwrap().children;
+            println!("module children: {}", children.len());
+        }
 
-        println!("done");
+        let mut order_struct: Ref<Struct> = m
+            .as_mut()
+            .add_struct(Some("Order".to_owned()), StructKind::Struct)?;
+
+        order_struct
+            .as_mut()
+            .add_field(|f| f.set_name("id").set_kind(U64).finish())?;
+
+        order_struct
+            .as_mut()
+            .add_struct(Some("Line".to_owned()), StructKind::Struct)?;
+        let order_struct_ref = order_struct.as_mut();
+
+        {
+            let children = &m.borrow().unwrap().children;
+            println!("module children: {}", children.len());
+        }
+
+        {
+            let module = order_struct.borrow_mut().unwrap().module().unwrap();
+            let children = &module.borrow_mut().children;
+            println!("module children: {}", children.len());
+        }
+
+        let module = m.borrow().unwrap();
+
+        for s in module.children().structs() {
+            println!("struct: {}", s.name());
+        }
+        eprintln!("done");
+        Ok(())
     }
 }
